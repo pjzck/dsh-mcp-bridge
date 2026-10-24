@@ -1,0 +1,21 @@
+{
+  "name": "dsh-mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server that exposes DeepSeek Harness as an execution subagent through the official dsh SDK profile.",
+  "type": "module",
+  "bin": {
+    "dsh-mcp-bridge": "src/server.mjs"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test:smoke": "node test/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  }
+}

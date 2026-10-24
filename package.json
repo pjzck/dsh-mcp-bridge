@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "MCP server that exposes DeepSeek Harness as an execution subagent through the official dsh SDK profile.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "dsh-mcp-bridge": "src/server.mjs"

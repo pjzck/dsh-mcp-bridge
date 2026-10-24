@@ -54,7 +54,7 @@ codex mcp add dsh -- node "H:\workspace\dsh-mcp-bridge\src\server.mjs"
 如果 Codex 需要显式环境变量：
 
 ```sh
-codex mcp add dsh --env DEEPSEEK_API_KEY=sk-... -- node "H:\...\src\server.mjs"
+codex mcp add dsh --env DEEPSEEK_API_KEY=<your-key> -- node "H:\...\src\server.mjs"
 ```
 
 ### 方式 B：`~/.codex/config.toml`
@@ -63,7 +63,7 @@ codex mcp add dsh --env DEEPSEEK_API_KEY=sk-... -- node "H:\...\src\server.mjs"
 [mcp_servers.dsh]
 command = "node"
 args = ["H:\\workspace\\dsh-mcp-bridge\\src\\server.mjs"]
-# env = { DEEPSEEK_API_KEY = "sk-..." }   # 可选；桥也会读 $DSH_HOME/.credentials.yaml
+# env = { DEEPSEEK_API_KEY = "<your-key>" }   # 可选；桥也会读 $DSH_HOME/.credentials.yaml
 ```
 
 注册后新建 Codex 任务，先让它调用 `dsh_info`，再让它在目标仓库里调用 `dsh_run` / `dsh_start`。
@@ -123,6 +123,8 @@ dsh_start { task: "继续修上一个测试", cwd: "H:\\repo", sessionId: "sessi
 ## 安全
 
 桥本身只是一个 stdio 进程，但它拉起的 `dsh --profile sdk` 拥有你给 DSH 的权限：能读写工作区、跑命令、访问网络。`DEEPSEEK_API_KEY` 只通过环境变量交给子进程，不写日志、不通过 MCP 返回。
+
+仓库本身不包含任何凭据：`.env` 已在 `.gitignore` 中，密钥只从进程环境或 `$DSH_HOME/.credentials.yaml` 读取。不要把 key 写进仓库、测试文件或提交历史。
 
 ## 开发
 

@@ -68,6 +68,10 @@ args = ["H:\\workspace\\dsh-mcp-bridge\\src\\server.mjs"]
 
 注册后新建 Codex 任务，先让它调用 `dsh_info`，再让它在目标仓库里调用 `dsh_run` / `dsh_start`。
 
+> Codex 第一次调用 MCP 工具会要求审批；在 App 里允许即可。非交互的 `codex exec` 默认是 `approval: never`，会直接拒绝 MCP 工具调用；自动化场景请显式传 `--approve-for-me`（或在你自己的隔离环境里用 bypass 参数），不要把 bypass 当成日常配置。
+>
+> 验证注册：`codex mcp list` 应出现 `dsh`，`codex mcp get dsh` 应显示 `transport: stdio` 和实际命令。
+
 ## 工具
 
 | 工具 | 用途 |

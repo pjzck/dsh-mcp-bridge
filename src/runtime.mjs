@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { resolveDshCommand, readApiKey, resolveDshHome } from './config.mjs'
 
@@ -64,8 +64,10 @@ export class DshRuntime {
         NO_COLOR: '1',
       },
       // Windows `.cmd` launchers are resolved by cmd.exe; the argv contains
-      // only launcher flags, never caller text.
+      // only launcher flags, never caller text. A POSIX runtime gets its own
+      // process group so a stop reaches every descendant.
       shell: process.platform === 'win32',
+      detached: process.platform !== 'win32',
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -256,15 +258,28 @@ export class DshRuntime {
 
   async kill() {
     const child = this.child
-    if (!child || this.exited) return
+    if (!child || this.exited || child.exitCode !== null) return
     this.exited = true
     const failure = new Error('DSH runtime was stopped')
     for (const pending of this.pending.values()) pending.reject(failure)
     this.pending.clear()
+    if (process.platform === 'win32' && child.pid !== undefined) {
+      // `shell: true` inserts cmd.exe between us and the Electron runtime;
+      // kill the whole tree so an interrupted MCP session leaves no orphan.
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+      return
+    }
     try {
-      child.kill()
+      process.kill(-child.pid, 'SIGTERM')
     } catch {
-      // Already gone.
+      try {
+        child.kill()
+      } catch {
+        // Already gone.
+      }
     }
   }
 

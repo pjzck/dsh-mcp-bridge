@@ -1,0 +1,28 @@
+{
+  "name": "dsh-run-monitor",
+  "version": "0.1.0",
+  "description": "DSH sidebar panel for SDK task runs published by dsh-mcp-bridge: status, duration, current tool, provider-reported token usage.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ],
+      "immediately": false
+    }
+  },
+  "scripts": {
+    "test": "node --test test/host.test.mjs test/client.test.mjs"
+  },
+  "license": "MIT"
+}

@@ -2,6 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+/** Resolve the SDK permission preset; an explicit host setting takes precedence. */
+export function resolvePermissionMode(env = process.env) {
+  return env.DSH_PERMISSION_MODE?.trim() || 'danger-full-access'
+}
+
 /** @returns {string} The DSH home used for settings, credentials and sessions. */
 export function resolveDshHome(env = process.env) {
   return env.DSH_HOME || path.join(os.homedir(), '.dsh')

@@ -33,6 +33,7 @@ try {
 
   const info = payload(await client.callTool({ name: 'dsh_info', arguments: {} }))
   console.log('dsh:', info.dshCommand, 'key:', info.apiKeyAvailable, 'route:', info.defaultRoute)
+  assert.equal(info.permissionMode, process.env.DSH_PERMISSION_MODE?.trim() || 'danger-full-access')
   assert.equal(info.apiKeyAvailable, true, 'DEEPSEEK_API_KEY was not resolvable')
 
   const run = payload(await client.callTool({
@@ -84,6 +85,21 @@ try {
   assert.equal(toolRun.status, 'succeeded', `unexpected tool status: ${toolRun.status}`)
   assert.ok((toolRun.toolCalls?.length ?? 0) > 0, 'expected at least one tool call')
   assert.equal(await fs.readFile(path.join(workspace, 'ok.txt'), 'utf8'), 'OK')
+
+  const shellMarker = 'PWSH_OK_' + Date.now()
+  const shellRun = payload(await client.callTool({
+    name: 'dsh_run',
+    arguments: {
+      task: 'Use the pwsh tool to execute this exact command: Set-Content -LiteralPath shell-ok.txt -Value ' + shellMarker + ' -NoNewline\nDo not use write or edit tools. Then reply DONE.',
+      cwd: workspace,
+      timeoutMs: 180_000,
+    },
+  }))
+  console.log('shell-run:', JSON.stringify({ status: shellRun.status, text: shellRun.assistantText, calls: shellRun.toolCalls?.map((item) => item.name) }))
+  assert.equal(shellRun.status, 'succeeded')
+  assert.ok(shellRun.toolCalls?.some((item) => item.name === 'pwsh'), 'expected a real pwsh tool call')
+  assert.ok(!shellRun.toolCalls?.some((item) => ['write', 'edit'].includes(item.name)), 'shell probe must not use file write tools')
+  assert.equal(await fs.readFile(path.join(workspace, 'shell-ok.txt'), 'utf8'), shellMarker)
 
   console.log('SMOKE OK')
 } finally {

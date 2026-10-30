@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { DshManager } from './manager.mjs'
 
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-const manager = new DshManager()
+const manager = new DshManager(process.env, { bridgeVersion: packageJson.version })
 const server = new McpServer({
   name: 'dsh-mcp-bridge',
   version: packageJson.version,
@@ -42,7 +42,7 @@ server.registerTool(
       return text({
         server: { name: 'dsh-mcp-bridge', version: packageJson.version, node: process.version, platform: process.platform },
         ...manager.info(),
-        hint: 'Sessions are DSH sessions in this runtime, not the desktop app UI. dsh_run waits; dsh_start + dsh_wait is better for long tasks.',
+        hint: 'Sessions are DSH sessions in this SDK runtime, not the desktop app UI. dsh_run waits; dsh_start + dsh_wait is better for long tasks. durationMs freezes at turn/end; usage.scope is "run" and never claims resumed history.',
       })
     } catch (error) {
       return failure(error)
@@ -153,6 +153,7 @@ server.registerTool(
 
 const transport = new StdioServerTransport()
 await server.connect(transport)
+await manager.publish().catch(() => {})
 console.error('[dsh-mcp] ready (stdio)')
 
 let stopping = false

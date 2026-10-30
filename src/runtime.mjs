@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { resolveDshCommand, readApiKey, resolveDshHome } from './config.mjs'
+import { resolveDshCommand, readApiKey, resolveDshHome, resolvePermissionMode } from './config.mjs'
+import { RunState } from './run-state.mjs'
 
 /** A JSON-RPC request that outlived its caller's budget. The runtime keeps working. */
 export class RuntimeTimeoutError extends Error {
@@ -34,6 +35,7 @@ export class DshRuntime {
     this.maxTokens = maxTokens
     this.command = command ?? resolveDshCommand(env)
     this.env = env
+    this.permissionMode = resolvePermissionMode(env)
     this.child = undefined
     this.initialized = false
     this.exited = false
@@ -51,6 +53,12 @@ export class DshRuntime {
     this.subagents = new Map()
     /** Sessions this runtime has created or resumed. @type {Set<string>} */
     this.sessions = new Set()
+    /** Incremental state per bridge run; never rebuilt from the capped event list. @type {Map<string, RunState>} */
+    this.states = new Map()
+    /** @type {((sessionId?: string) => void) | undefined} */
+    this.onStateChange = undefined
+    /** @type {((error: Error) => void) | undefined} */
+    this.onRuntimeExit = undefined
   }
 
   async start() {
@@ -60,6 +68,7 @@ export class DshRuntime {
       cwd: this.cwd,
       env: {
         ...this.env,
+        DSH_PERMISSION_MODE: this.permissionMode,
         ...(key ? { DEEPSEEK_API_KEY: key } : {}),
         NO_COLOR: '1',
       },
@@ -179,20 +188,32 @@ export class DshRuntime {
       if (typeof event.seq === 'number') {
         this.lastSeq.set(sessionId, Math.max(this.lastSeq.get(sessionId) ?? -1, event.seq))
       }
+      const state = this.states.get(sessionId)
+      if (state !== undefined) {
+        const changed = state.apply(event)
+        if (changed) this.onStateChange?.(sessionId)
+      }
       return
     }
     if (method === 'session.status') {
       if (typeof params.sessionId === 'string' && typeof params.status === 'string') {
         this.status.set(params.sessionId, params.status)
+        this.onStateChange?.(params.sessionId)
       }
       return
     }
     if (method === 'subagent.started') {
-      if (typeof params.childSessionId === 'string') this.subagents.set(params.childSessionId, { ...params, state: 'started' })
+      if (typeof params.childSessionId === 'string') {
+        this.subagents.set(params.childSessionId, { ...params, state: 'started' })
+        this.onStateChange?.(params.parentSessionId)
+      }
       return
     }
     if (method === 'subagent.finished') {
-      if (typeof params.childSessionId === 'string') this.subagents.set(params.childSessionId, { ...params, state: 'finished' })
+      if (typeof params.childSessionId === 'string') {
+        this.subagents.set(params.childSessionId, { ...params, state: 'finished' })
+        this.onStateChange?.(params.parentSessionId)
+      }
     }
   }
 
@@ -206,10 +227,28 @@ export class DshRuntime {
     const failure = new Error(tail ? `${reason}\n${tail}` : reason)
     for (const pending of this.pending.values()) pending.reject(failure)
     this.pending.clear()
+    this.onRuntimeExit?.(failure)
   }
 
   baseline(sessionId) {
     return this.lastSeq.get(sessionId) ?? -1
+  }
+
+  /**
+   * Arm incremental tracking for a new run before the prompt is submitted, so
+   * events that race the `session/prompt` response are not lost.
+   * @param {string} sessionId
+   * @param {number} baselineSeq
+   * @param {number} [queuedAt]
+   */
+  beginRun(sessionId, baselineSeq, queuedAt = Date.now()) {
+    const state = new RunState({ sessionId, baselineSeq, queuedAt })
+    this.states.set(sessionId, state)
+    return state
+  }
+
+  stateFor(sessionId) {
+    return this.states.get(sessionId)
   }
 
   hasSession(sessionId) {
@@ -284,77 +323,36 @@ export class DshRuntime {
   }
 
   /**
-   * Project the events committed after `baselineSeq` into a small, stable view.
+   * Project the current run's incremental state into a small, stable view.
+   * The view is computed from {@link RunState}, not from the capped raw event
+   * list, so usage/tool/turn totals survive beyond 2000 events.
    * @param {string} sessionId
    * @param {number} baselineSeq
    */
   snapshot(sessionId, baselineSeq) {
-    const events = (this.events.get(sessionId) ?? []).filter((event) => (event.seq ?? -1) > baselineSeq)
-    const toolCalls = new Map()
-    let assistantText = ''
-    let lastAssistantSeq = -1
-    let turnEnd
-    let usage
-    for (const event of events) {
-      if (event.type === 'assistant/message') {
-        const content = event.data?.message?.content
-        if (Array.isArray(content)) {
-          const text = content
-            .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-            .map((block) => block.text)
-            .join('')
-          if (text.trim() !== '' && (event.seq ?? 0) >= lastAssistantSeq) {
-            assistantText = text
-            lastAssistantSeq = event.seq ?? 0
-          }
-        }
-        continue
+    let state = this.states.get(sessionId)
+    if (state === undefined || state.baselineSeq !== baselineSeq) {
+      // Fallback for direct callers (and for a state map lost on re-entry):
+      // replay only what the capped buffer still holds. Normal runs always arm
+      // the state through beginRun() before the prompt.
+      state = new RunState({ sessionId, baselineSeq, queuedAt: Date.now() })
+      for (const event of this.events.get(sessionId) ?? []) {
+        if ((event.seq ?? -1) > baselineSeq) state.apply(event)
       }
-      if (event.type === 'tool/call') {
-        const data = event.data ?? {}
-        toolCalls.set(data.callId ?? `${event.seq}`, {
-          name: data.name ?? 'unknown',
-          arguments: typeof data.arguments === 'string' && data.arguments.length > 500
-            ? `${data.arguments.slice(0, 500)}…`
-            : data.arguments,
-          status: 'called',
-        })
-        continue
-      }
-      if (event.type === 'tool/result') {
-        const data = event.data ?? {}
-        const key = data.callId
-        const current = key === undefined ? undefined : toolCalls.get(key)
-        if (current !== undefined) {
-          current.status = data.status ?? (data.error ? 'error' : data.ok === false ? 'error' : 'completed')
-          if (data.error) current.error = typeof data.error === 'string' ? data.error : data.error.message
-        }
-        continue
-      }
-      if (event.type === 'step/end') {
-        if (event.data?.usage) usage = event.data.usage
-        continue
-      }
-      if (event.type === 'turn/end') {
-        turnEnd = event.data?.reason
-      }
+      this.states.set(sessionId, state)
     }
+    const view = state.view()
     const liveStatus = this.status.get(sessionId)
-    let status = 'running'
-    if (turnEnd?.kind === 'error') status = 'error'
-    else if (turnEnd !== undefined) status = 'succeeded'
+    const turnEnd = view.turnEnd
     return {
-      sessionId,
-      status,
+      ...view,
+      status: view.status === 'queued' ? 'running' : view.status,
       liveStatus: liveStatus ?? 'unknown',
-      assistantText,
-      toolCalls: [...toolCalls.values()],
-      usage,
-      turnEnd,
-      ...(turnEnd?.kind === 'error' && turnEnd.error
-        ? { error: { code: turnEnd.error.code, message: turnEnd.error.message } }
-        : {}),
-      events: events.slice(-80).map((event) => ({ seq: event.seq, type: event.type })),
+      events: view.events.slice(-80),
+      error: turnEnd?.kind === 'error' && turnEnd.error
+        ? { code: turnEnd.error.code, message: turnEnd.error.message }
+        : view.error,
+      runtimeExited: this.exited,
       subagents: [...this.subagents.values()].filter((item) => item.parentSessionId === sessionId),
     }
   }

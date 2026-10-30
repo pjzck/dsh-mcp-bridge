@@ -22,7 +22,7 @@
     }
   },
   "scripts": {
-    "test": "node --test test/host.test.mjs test/client.test.mjs"
+    "test": "node --test test/host.test.mjs test/client.test.mjs test/transcript.test.mjs"
   },
   "license": "MIT"
 }

@@ -143,6 +143,21 @@ test('empty and missing status directories are normal empty states', async () =>
   assert.deepEqual(result.value.archivedFiles, [])
 })
 
+test('legacy task titles are filled in the background from public messages without blocking state reads', async () => {
+  const dir=path.join(root,'legacy-titles')
+  await fs.mkdir(dir,{recursive:true})
+  await fs.writeFile(path.join(dir,'bridge-a.json'),JSON.stringify(document()))
+  let reads=0
+  const handle=createStatusHandler({statusDir:dir,now:()=>NOW,maintain:false,readSession:async()=>{reads++;return{events:[{type:'user/message',data:{source:{kind:'plugin'},content:[{type:'text',text:'PRIVATE_CONTEXT'}]}},{type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'实现只读会话详情页。不要修改其他项目'}]}}]}}})
+  const first=await handle()
+  assert.equal(first.ok,true)
+  await new Promise(resolve=>setImmediate(resolve))
+  const second=await handle()
+  assert.equal(second.value.files[0].runs[0].title,'实现只读会话详情页')
+  assert.equal(reads,1)
+  assert.doesNotMatch(JSON.stringify(second),/PRIVATE_CONTEXT|不要修改其他项目/)
+})
+
 test('multiple bridge files, staleness, corruption and oversized files are isolated', async () => {
   const dir = path.join(root, 'mixed')
   await fs.mkdir(dir, { recursive: true })

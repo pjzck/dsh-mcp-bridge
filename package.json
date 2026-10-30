@@ -10,8 +10,8 @@
   },
   "scripts": {
     "start": "node src/server.mjs",
-    "test": "node --test test/config.test.mjs test/run-state.test.mjs test/manager.test.mjs test/status-publisher.test.mjs test/installer.test.mjs plugins/dsh-run-monitor/test/host.test.mjs plugins/dsh-run-monitor/test/client.test.mjs",
-    "test:plugin": "node --test plugins/dsh-run-monitor/test/host.test.mjs plugins/dsh-run-monitor/test/client.test.mjs",
+    "test": "node --test test/config.test.mjs test/run-state.test.mjs test/manager.test.mjs test/status-publisher.test.mjs test/installer.test.mjs plugins/dsh-run-monitor/test/host.test.mjs plugins/dsh-run-monitor/test/client.test.mjs plugins/dsh-run-monitor/test/transcript.test.mjs",
+    "test:plugin": "node --test plugins/dsh-run-monitor/test/host.test.mjs plugins/dsh-run-monitor/test/client.test.mjs plugins/dsh-run-monitor/test/transcript.test.mjs",
     "test:smoke": "node test/smoke.mjs"
   },
   "engines": {

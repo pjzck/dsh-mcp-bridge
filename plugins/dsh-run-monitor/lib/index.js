@@ -10,6 +10,7 @@
 import { readdir, lstat, readFile, mkdir, rename } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { createTranscriptHandler, errorResult } from './transcript.js'
 
 const inject = ['connection']
 const API_PATH = '/api/dsh-run-monitor'
@@ -193,8 +194,8 @@ function sanitizeUsage(usage) {
 function sanitizeRun(run) {
   if (!run || typeof run !== 'object') return undefined
   const out = {}
-  for (const key of ['sessionId', 'cwd', 'provider', 'model', 'status', 'statusLine', 'note', 'startedAt', 'finishedAt']) {
-    const value = text(run[key], key === 'cwd' ? 500 : key === 'statusLine' ? 600 : key === 'note' ? 200 : 200)
+  for (const key of ['sessionId', 'title', 'cwd', 'provider', 'model', 'status', 'statusLine', 'note', 'startedAt', 'finishedAt']) {
+    const value = text(run[key], key === 'title' ? 120 : key === 'cwd' ? 500 : key === 'statusLine' ? 600 : key === 'note' ? 200 : 200)
     if (value !== undefined) out[key] = value
   }
   if (typeof run.isRunning === 'boolean') out.isRunning = run.isRunning
@@ -682,11 +683,36 @@ export async function readStatusFiles({
 }
 
 /** Create the testable request handler. */
-export function createStatusHandler({ statusDir, now = () => Date.now(), maxBytes, graceMs, isProcessAlive, maintain } = {}) {
+export function createStatusHandler({ statusDir, now = () => Date.now(), maxBytes, graceMs, isProcessAlive, maintain, readSession, resolveReadSession } = {}) {
+  const titles = new Map()
+  let pendingTitles = 0
+  function enrichTitles(value) {
+    const reader = typeof readSession === 'function' ? readSession : resolveReadSession?.()
+    if (typeof reader !== 'function') return
+    for (const file of [...value.files, ...value.archivedFiles]) for (const run of file.runs || []) {
+      if (run.title || !run.sessionId || !file.bridge?.instanceId) continue
+      const key = JSON.stringify([file.bridge.instanceId, run.sessionId, run.startedAt])
+      const cached = titles.get(key)
+      if (cached?.title) { run.title = cached.title; continue }
+      if (cached?.pending || cached?.retryAt > now() || pendingTitles >= 2) continue
+      if (titles.size >= 128) titles.delete(titles.keys().next().value)
+      titles.set(key, { pending: true })
+      pendingTitles++
+      // Legacy snapshots have no title. Fill a short public task label in the
+      // background; a large persisted log must never delay the state response.
+      Promise.resolve().then(() => reader(run.sessionId)).then(log => {
+        const message = [...(Array.isArray(log?.events) ? log.events : [])].reverse().find(event => event?.type === 'user/message' && event.data?.source?.kind === 'user')
+        const text = (message?.data?.content || []).filter(block => block?.type === 'text').map(block => block.text || '').join(' ')
+        const title = text.trim().split(/[\r\n。！？!?]/, 1)[0].replace(/^\s*[#>*-]+\s*/, '').replace(/\s+/g, ' ').slice(0, 80)
+        titles.set(key, { title, retryAt: now() + 10000 })
+      }).catch(() => titles.set(key, { retryAt: now() + 10000 })).finally(() => { pendingTitles-- })
+    }
+  }
   return async function handle() {
     const at = now()
     try {
       const value = await readStatusFiles({ statusDir, now: at, maxBytes, graceMs, isProcessAlive, maintain })
+      enrichTitles(value)
       return { ok: true, value: { schemaVersion: 1, generatedAt: new Date(at).toISOString(), ...value } }
     } catch (error) {
       return { ok: false, error: { code: 'internal', message: String(error?.message ?? error), details: {} } }
@@ -694,10 +720,133 @@ export function createStatusHandler({ statusDir, now = () => Date.now(), maxByte
   }
 }
 
+/** True only when a current or archived snapshot pairs both identifiers. */
+function statusContainsSession(status, bridgeInstanceId, sessionId) {
+  const files = [
+    ...(Array.isArray(status?.files) ? status.files : []),
+    ...(Array.isArray(status?.archivedFiles) ? status.archivedFiles : []),
+  ]
+  for (const file of files) {
+    if (!file || typeof file !== 'object' || file.error !== undefined) continue
+    if (file.bridge?.instanceId !== bridgeInstanceId) continue
+    if (!Array.isArray(file.runs)) continue
+    if (file.runs.some((run) => run?.sessionId === sessionId)) return true
+  }
+  return false
+}
+
+const ERROR_STATUS = {
+  'invalid-body': 400,
+  'invalid-method': 400,
+  'invalid-argument': 400,
+  'not-authorized': 403,
+  unavailable: 503,
+  'session-read-failed': 502,
+  internal: 500,
+}
+
+function statusForError(result) {
+  if (result?.ok === true) return 200
+  return ERROR_STATUS[result?.error?.code] ?? 500
+}
+
+/** Build a method dispatcher over the existing state handler and transcript. */
+export function createApiHandler({
+  statusDir,
+  now = () => Date.now(),
+  maxBytes,
+  graceMs,
+  isProcessAlive,
+  maintain,
+  readSession,
+  resolveReadSession,
+  maxResponseBytes,
+} = {}) {
+  const statusHandler = createStatusHandler({ statusDir, now, maxBytes, graceMs, isProcessAlive, maintain, readSession, resolveReadSession })
+  const transcriptHandler = createTranscriptHandler({
+    authorizeSession: async ({ bridgeInstanceId, sessionId }) => {
+      // Authorization always reads the status snapshots without invoking the
+      // archive pass, so a read request never moves bridge files.
+      const status = await readStatusFiles({
+        statusDir,
+        now: now(),
+        maxBytes,
+        graceMs,
+        isProcessAlive,
+        maintain: false,
+      })
+      return statusContainsSession(status, bridgeInstanceId, sessionId)
+    },
+    readSession,
+    resolveReadSession,
+    maxResponseBytes,
+  })
+
+  return async function handleApi(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { status: 400, body: errorResult('invalid-body', 'request body must be a JSON object') }
+    }
+    const method = body.method === undefined ? 'state' : body.method
+    if (method === 'state') {
+      return { status: 200, body: await statusHandler() }
+    }
+    if (method === 'transcript') {
+      const result = await transcriptHandler(body)
+      return { status: statusForError(result), body: result }
+    }
+    return {
+      status: 400,
+      body: errorResult('invalid-method', 'body.method must be "state" or "transcript"', {
+        method: typeof method === 'string' ? method.slice(0, 40) : typeof method,
+      }),
+    }
+  }
+}
+
+async function readJsonBody(request) {
+  let raw
+  try {
+    raw = await request.text()
+  } catch {
+    return { error: errorResult('invalid-body', 'failed to read the request body') }
+  }
+  if (raw.trim() === '') return { body: {} }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { error: errorResult('invalid-body', 'request body must be valid JSON') }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { error: errorResult('invalid-body', 'request body must be a JSON object') }
+  }
+  return { body: parsed }
+}
+
 function apply(ctx, config = {}) {
   if (ctx === undefined || ctx.connection === undefined) return
   const statusDir = resolveStatusDir(process.env, config)
-  const handle = createStatusHandler({ statusDir, maxBytes: config.maxBytes })
+  const configuredReadSession = typeof config.readSession === 'function' ? config.readSession : undefined
+  // Cordis has no optional-inject object form. Keep `connection` required and
+  // resolve the optional `sessionQuery` service at request time.
+  const resolveReadSession = configuredReadSession === undefined
+    ? () => {
+        let service
+        try {
+          service = typeof ctx.get === 'function' ? ctx.get('sessionQuery') : undefined
+        } catch {
+          return undefined
+        }
+        if (!service || typeof service.readSession !== 'function') return undefined
+        return (sessionId) => service.readSession(sessionId)
+      }
+    : () => configuredReadSession
+  const handle = createApiHandler({
+    statusDir,
+    maxBytes: config.maxBytes,
+    readSession: configuredReadSession,
+    resolveReadSession,
+  })
   ctx.connection.fetch.register({
     path: API_PATH,
     methods: ['POST'],
@@ -707,7 +856,20 @@ function apply(ctx, config = {}) {
       if (type !== undefined && type !== 'application/json') {
         return Response.json({ ok: false, error: { code: 'internal', message: 'content type must be application/json' } }, { status: 415 })
       }
-      return Response.json(await handle(), { headers: { 'cache-control': 'no-store' } })
+      const parsed = await readJsonBody(request)
+      if (parsed.error !== undefined) {
+        return Response.json(parsed.error, { status: 400, headers: { 'cache-control': 'no-store' } })
+      }
+      let result
+      try {
+        result = await handle(parsed.body)
+      } catch (error) {
+        result = {
+          status: 500,
+          body: { ok: false, error: { code: 'internal', message: String(error?.message ?? error), details: {} } },
+        }
+      }
+      return Response.json(result.body, { status: result.status, headers: { 'cache-control': 'no-store' } })
     },
   })
 }

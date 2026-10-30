@@ -197,10 +197,12 @@ node scripts/install-run-monitor.mjs --dsh-home "$env:DSH_HOME" --uninstall
 - 源包默认 junction；`--copy` 使用受控拷贝。
 - 改动 `cordis.patch.yml` 前写 `.bak-dsh-run-monitor-<时间>` 备份；重复运行不重复插入、不重复备份。
 - 脚本不会杀进程或重启服务；需要手动重启/重载 DSH host 后插件才生效。
-- 面板通过 DSH 已认证的 `POST /api/dsh-run-monitor` Connection endpoint 读取，不新开端口。支持空态、加载/读取错误、状态过期、多桥文件、损坏/超大文件；toggle 留在 sidebar footer 槽内，仅 popup portal 到 body；请求有 6 秒 AbortController 超时，卸载时中止并清理定时器；读取失败时缓存任务会标记为“状态已过期或连接中断”，不会继续显示为实时运行。运行中 3 秒轮询，空闲 15 秒，隐藏页 30 秒。结束任务的用时来自发布的 `durationMs`，不会继续增长。
+- 面板通过 DSH 已认证的 `POST /api/dsh-run-monitor` Connection endpoint 读取，不新开端口。支持空态、加载/读取错误、状态过期、多桥文件、损坏/超大文件；面板注册为 conversation 的 View 标签（与 Chat、Trajectory 并列），没有侧边栏入口和浮层；请求有 6 秒 AbortController 超时，卸载时中止并清理定时器；读取失败时缓存任务会标记为“状态已过期或连接中断”，不会继续显示为实时运行。运行中 3 秒轮询，空闲 15 秒，隐藏页 30 秒。结束任务的用时来自发布的 `durationMs`，不会继续增长。
 - 若把桥的 `DSH_MCP_STATUS_DIR` 改到非默认目录，DSH host 进程也要能读到同一目录：给它设置相同的 `DSH_MCP_STATUS_DIR`（或 `DSH_MONITOR_STATUS_DIR`/插件 `statusDir`）。默认两边都解析 `$DSH_HOME/storages/dsh-run-monitor`，无需额外配置。
 
 ## 验证与限制
+
+「DSH 任务」现在使用活跃 agent 卡片概览，历史与需关注任务分开查看，支持搜索、模型筛选和任务详情。空闲桥收在连接信息中；新增的步骤计数与上下文窗口字段需重启 MCP bridge 后发布。详情及会话正文入口的接入说明见 [插件文档](plugins/dsh-run-monitor/README.md#任务概览)。
 
 ```sh
 pnpm test           # 核心配置、会话状态、状态发布、插件主机和安装安全

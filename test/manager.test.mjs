@@ -91,6 +91,17 @@ async function startRun(manager) {
   return manager.start({ task: 'do work', cwd: process.cwd() })
 }
 
+test('task titles describe work and propagate to summaries without publishing the task body', async () => {
+  const { manager } = makeManager()
+  const explicit = await manager.start({ task: 'Detailed internal instructions', title: '实现只读会话详情页', cwd: process.cwd() })
+  assert.equal(explicit.title, '实现只读会话详情页')
+  assert.equal(manager.list()[0].title, '实现只读会话详情页')
+  const derived = await manager.start({ task: '补齐会话读取接口。然后检查其他文件', cwd: process.cwd() })
+  assert.equal(derived.title, '补齐会话读取接口')
+  await assert.rejects(manager.start({ task: 'x', title: '', cwd: process.cwd() }), /title/)
+  await assert.rejects(manager.start({ task: 'x', title: 'x'.repeat(121), cwd: process.cwd() }), /title/)
+})
+
 test('start returns running and completed run freezes duration and usage', async () => {
   const { manager, runtime, setNow } = makeManager()
   const started = await startRun(manager)

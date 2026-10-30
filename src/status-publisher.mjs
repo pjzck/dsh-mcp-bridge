@@ -77,9 +77,9 @@ function pick(source, keys) {
 export function sanitizeRun(run) {
   if (!run || typeof run !== 'object') return undefined
   const out = {}
-  const stringKeys = ['sessionId', 'cwd', 'provider', 'model', 'status', 'statusLine', 'note', 'startedAt', 'finishedAt']
+  const stringKeys = ['sessionId', 'title', 'cwd', 'provider', 'model', 'status', 'statusLine', 'note', 'startedAt', 'finishedAt']
   for (const key of stringKeys) {
-    const value = str(run[key], key === 'cwd' ? 500 : key === 'statusLine' ? 600 : key === 'note' ? 200 : 200)
+    const value = str(run[key], key === 'title' ? 120 : key === 'cwd' ? 500 : key === 'statusLine' ? 600 : key === 'note' ? 200 : 200)
     if (value !== undefined) out[key] = value
   }
   if (typeof run.isRunning === 'boolean') out.isRunning = run.isRunning

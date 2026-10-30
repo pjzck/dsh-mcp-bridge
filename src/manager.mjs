@@ -86,10 +86,14 @@ export class DshManager {
    * @param {string} [input.provider]
    * @param {string} [input.model]
    */
-  async start({ task, cwd, sessionId, connection, provider, model }) {
+  async start({ task, title, cwd, sessionId, connection, provider, model }) {
     const text = task?.trim()
     if (!text) throw new Error('task must not be empty')
     if (text.length > 100_000) throw new Error('task exceeds the 100,000 character limit')
+    if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.trim().length > 120)) throw new Error('title must contain 1 to 120 characters')
+    const taskTitle = title === undefined
+      ? text.split(/[\r\n。！？!?]/, 1)[0].replace(/^\s*[#>*-]+\s*/, '').replace(/\s+/g, ' ').slice(0, 80) || '未命名任务'
+      : title.trim().replace(/\s+/g, ' ')
     const requested = sessionId?.trim()
     const previous = requested ? this.runs.get(requested) : undefined
     // The cached status may be stale: the previous turn may have ended
@@ -126,6 +130,7 @@ export class DshManager {
     const state = runtime.beginRun(activeSession, baselineSeq, queuedAtMs)
     const run = {
       sessionId: activeSession,
+      title: taskTitle,
       cwd: resolvedCwd,
       connection: context.connection,
       profile: context.profile,
@@ -230,6 +235,7 @@ export class DshManager {
       status: run.status,
       isRunning,
       cwd: run.cwd,
+      title: run.title,
       connection: run.connection,
       profile: run.profile,
       provider: run.provider,
@@ -318,6 +324,7 @@ export class DshManager {
     const decorated = this.#decorate(run, view)
     return {
       sessionId: run.sessionId,
+      title: run.title,
       cwd: run.cwd,
       connection: run.connection,
       profile: run.profile,

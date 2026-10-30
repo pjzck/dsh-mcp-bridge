@@ -59,14 +59,15 @@ server.registerTool(
     description: 'Queue one task for the DSH coding agent and return immediately with a sessionId. Omit sessionId to create a new session; pass a previous sessionId to continue that session. Follow with dsh_wait / dsh_get.',
     inputSchema: {
       task: z.string().min(1).max(100_000).describe('The task text for the DSH agent.'),
+      title: z.string().trim().min(1).max(120).optional().describe('Short human-readable task title shown in the agent overview.'),
       cwd: workspace,
       sessionId: sessionId.optional(),
       ...route,
     },
   },
-  async ({ task, cwd, sessionId: requested, connection, provider, model }) => {
+  async ({ task, title, cwd, sessionId: requested, connection, provider, model }) => {
     try {
-      return text(await manager.start({ task, cwd, sessionId: requested, connection, provider, model }))
+      return text(await manager.start({ task, title, cwd, sessionId: requested, connection, provider, model }))
     } catch (error) {
       return failure(error)
     }
@@ -99,15 +100,16 @@ server.registerTool(
     description: 'Queue a task and wait for the turn to settle. Convenient for short tasks; long tasks should use dsh_start + dsh_wait so the MCP call does not block. Timeout leaves the turn running and returns timedOut:true.',
     inputSchema: {
       task: z.string().min(1).max(100_000).describe('The task text for the DSH agent.'),
+      title: z.string().trim().min(1).max(120).optional().describe('Short human-readable task title shown in the agent overview.'),
       cwd: workspace,
       sessionId: sessionId.optional(),
       ...route,
       timeoutMs: z.number().int().min(1_000).max(3_600_000).optional().describe('Overall budget in milliseconds; default 15 minutes.'),
     },
   },
-  async ({ task, cwd, sessionId: requested, connection, provider, model, timeoutMs }) => {
+  async ({ task, title, cwd, sessionId: requested, connection, provider, model, timeoutMs }) => {
     try {
-      return text(await manager.run({ task, cwd, sessionId: requested, connection, provider, model, timeoutMs }))
+      return text(await manager.run({ task, title, cwd, sessionId: requested, connection, provider, model, timeoutMs }))
     } catch (error) {
       return failure(error)
     }

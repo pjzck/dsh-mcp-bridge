@@ -32,8 +32,8 @@ try {
   console.log('tools:', tools.tools.map((tool) => tool.name).join(', '))
 
   const info = payload(await client.callTool({ name: 'dsh_info', arguments: {} }))
-  console.log('dsh:', info.dshCommand, 'key:', info.apiKeyAvailable, 'route:', info.defaultRoute)
-  assert.equal(info.apiKeyAvailable, true, 'DEEPSEEK_API_KEY was not resolvable')
+  console.log('dsh:', info.dshCommand, 'connection:', info.connection, 'key ref:', info.apiKeyEnv, 'route:', info.defaultRoute)
+  if (info.apiKeyEnv) assert.equal(info.apiKeyAvailable, true, `Credential was not resolvable: ${info.apiKeyEnv}`)
 
   const run = payload(await client.callTool({
     name: 'dsh_run',

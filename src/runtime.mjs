@@ -1,6 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { resolveDshCommand, readApiKey, resolveDshHome } from './config.mjs'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { resolveDshCommand } from './config.mjs'
 
 /** A JSON-RPC request that outlived its caller's budget. The runtime keeps working. */
 export class RuntimeTimeoutError extends Error {
@@ -11,7 +14,7 @@ export class RuntimeTimeoutError extends Error {
 }
 
 /**
- * One `dsh --profile sdk` child process and its newline-delimited JSON-RPC
+ * One configured DSH SDK child process and its newline-delimited JSON-RPC
  * session. The runtime owns the child; disposing it disposes every session in
  * that child.
  */
@@ -23,10 +26,13 @@ export class DshRuntime {
    * @param {string} options.model
    * @param {string} [options.reasoningEffort]
    * @param {number} [options.maxTokens]
+   * @param {string} [options.profile]
+   * @param {string[]} [options.patches]
+   * @param {object} [options.providerConfig]
    * @param {string} [options.command]
    * @param {NodeJS.ProcessEnv} [options.env]
    */
-  constructor({ cwd, provider, model, reasoningEffort, maxTokens, command, env = process.env }) {
+  constructor({ cwd, provider, model, reasoningEffort, maxTokens, command, profile = 'sdk', patches = [], providerConfig, env = process.env }) {
     this.cwd = cwd
     this.provider = provider
     this.model = model
@@ -34,6 +40,10 @@ export class DshRuntime {
     this.maxTokens = maxTokens
     this.command = command ?? resolveDshCommand(env)
     this.env = env
+    this.profile = profile
+    this.patches = patches
+    this.providerConfig = providerConfig
+    this.patchDirectory = undefined
     this.child = undefined
     this.initialized = false
     this.exited = false
@@ -55,18 +65,31 @@ export class DshRuntime {
 
   async start() {
     if (this.child) return this
-    const key = readApiKey(resolveDshHome(this.env), this.env)
-    const child = spawn(this.command, ['--profile', 'sdk'], {
+    const argv = ['--profile', this.profile]
+    for (const patch of this.patches) argv.push('--patch', patch)
+    if (this.providerConfig) {
+      this.patchDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-mcp-'))
+      const patch = path.join(this.patchDirectory, 'provider.json')
+      await fs.writeFile(patch, JSON.stringify([{ id: 'llm-deepseek', config: this.providerConfig }]), { mode: 0o600 })
+      argv.push('--patch', patch)
+    }
+    const shell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(this.command)
+    // cmd.exe requires explicit quoting for launchers and patch paths containing spaces.
+    const quote = (value) => {
+      if (/["\r\n%]/.test(value)) throw new Error('Invalid character in Windows DSH launcher argument')
+      return `"${value}"`
+    }
+    const launchCommand = shell ? [this.command, ...argv].map(quote).join(' ') : this.command
+    const child = spawn(launchCommand, shell ? [] : argv, {
       cwd: this.cwd,
       env: {
         ...this.env,
-        ...(key ? { DEEPSEEK_API_KEY: key } : {}),
         NO_COLOR: '1',
       },
       // Windows `.cmd` launchers are resolved by cmd.exe; the argv contains
       // only launcher flags, never caller text. A POSIX runtime gets its own
       // process group so a stop reaches every descendant.
-      shell: process.platform === 'win32',
+      shell,
       detached: process.platform !== 'win32',
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -199,7 +222,8 @@ export class DshRuntime {
   #onExit(code, error, signal) {
     if (this.exited) return
     this.exited = true
-    const tail = this.stderr.trim().split('\n').slice(-6).join('\n')
+    void this.#cleanupPatch()
+    const tail = this.stderr.trim().split('\n').slice(-30).join('\n')
     const reason = error
       ? error.message
       : `DSH SDK runtime exited (code ${String(code)}, signal ${String(signal)})`
@@ -256,7 +280,14 @@ export class DshRuntime {
     await this.kill()
   }
 
+  async #cleanupPatch() {
+    const directory = this.patchDirectory
+    this.patchDirectory = undefined
+    if (directory) await fs.rm(directory, { recursive: true, force: true }).catch(() => {})
+  }
+
   async kill() {
+    await this.#cleanupPatch()
     const child = this.child
     if (!child || this.exited || child.exitCode !== null) return
     this.exited = true

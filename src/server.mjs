@@ -13,10 +13,12 @@ const server = new McpServer({
 })
 
 const sessionId = z.string().min(1).describe('DSH session id, e.g. session-… returned by a previous call.')
-const workspace = z.string().optional().describe('Absolute working directory for the DSH agent. Defaults to the MCP server process cwd.')
+const workspace = z.string().optional().describe('Working directory for the DSH agent. Defaults to the selected connection cwd, then the MCP server cwd.')
+const connection = z.string().min(1).optional().describe('Named bridge connection from mcp-bridge.json. Omit to use the configured default.')
 const route = {
-  provider: z.string().optional().describe('Model provider route; defaults to DSH settings (deepseek-official).'),
-  model: z.string().optional().describe('Model id; defaults to DSH settings (deepseek-flash).'),
+  connection,
+  provider: z.string().optional().describe('DSH provider route; defaults to the selected connection, then DSH settings.'),
+  model: z.string().optional().describe('Model id; defaults to the selected connection, then DSH settings.'),
 }
 
 /** @param {unknown} value */
@@ -35,13 +37,13 @@ server.registerTool(
   {
     title: 'DeepSeek Harness bridge info',
     description: 'Report the DSH launcher, model route, API-key availability, live SDK runtimes, and tracked runs. Call this first when a DSH call fails.',
-    inputSchema: {},
+    inputSchema: { connection },
   },
-  async () => {
+  async ({ connection }) => {
     try {
       return text({
         server: { name: 'dsh-mcp-bridge', version: packageJson.version, node: process.version, platform: process.platform },
-        ...manager.info(),
+        ...manager.info({ connection }),
         hint: 'Sessions are DSH sessions in this runtime, not the desktop app UI. dsh_run waits; dsh_start + dsh_wait is better for long tasks.',
       })
     } catch (error) {
@@ -62,9 +64,9 @@ server.registerTool(
       ...route,
     },
   },
-  async ({ task, cwd, sessionId: requested, provider, model }) => {
+  async ({ task, cwd, sessionId: requested, connection, provider, model }) => {
     try {
-      return text(await manager.start({ task, cwd, sessionId: requested, provider, model }))
+      return text(await manager.start({ task, cwd, sessionId: requested, connection, provider, model }))
     } catch (error) {
       return failure(error)
     }
@@ -103,9 +105,9 @@ server.registerTool(
       timeoutMs: z.number().int().min(1_000).max(3_600_000).optional().describe('Overall budget in milliseconds; default 15 minutes.'),
     },
   },
-  async ({ task, cwd, sessionId: requested, provider, model, timeoutMs }) => {
+  async ({ task, cwd, sessionId: requested, connection, provider, model, timeoutMs }) => {
     try {
-      return text(await manager.run({ task, cwd, sessionId: requested, provider, model, timeoutMs }))
+      return text(await manager.run({ task, cwd, sessionId: requested, connection, provider, model, timeoutMs }))
     } catch (error) {
       return failure(error)
     }

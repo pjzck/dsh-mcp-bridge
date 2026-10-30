@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { resolveDshCommand, resolveDshHome, resolveModel, readApiKey } from './config.mjs'
+import { resolveConnection, readBridgeConfig, connectionInfo } from './config.mjs'
 import { DshRuntime } from './runtime.mjs'
 
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000
@@ -9,7 +9,7 @@ const WAIT_SLICE_MS = 30_000
 
 /**
  * Owns the SDK runtimes and the MCP-level run records. One runtime per
- * (cwd, provider, model) keeps session directories and model routes stable
+ * launch context keeps connections, credentials and model routes isolated
  * without restarting a runtime when the caller switches workspace.
  */
 export class DshManager {
@@ -20,21 +20,17 @@ export class DshManager {
     this.runs = new Map()
   }
 
-  #runtimeKey({ cwd, provider, model }) {
-    return `${cwd}\n${provider}\n${model}`
+  #runtimeKey(context) {
+    const { env, ...options } = context
+    const environment = Object.fromEntries(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)))
+    return createHash('sha256').update(JSON.stringify({ ...options, env: environment })).digest('hex')
   }
 
-  async #ensureRuntime({ cwd, provider, model }) {
-    const key = this.#runtimeKey({ cwd, provider, model })
+  async #ensureRuntime(context) {
+    const key = this.#runtimeKey(context)
     const existing = this.runtimes.get(key)
     if (existing && !existing.exited) return existing
-    const runtime = new DshRuntime({
-      cwd,
-      provider,
-      model,
-      command: resolveDshCommand(this.env),
-      env: this.env,
-    })
+    const runtime = new DshRuntime(context)
     try {
       await runtime.start()
     } catch (error) {
@@ -59,29 +55,34 @@ export class DshManager {
    * @param {string} input.task
    * @param {string} [input.cwd]
    * @param {string} [input.sessionId]
+   * @param {string} [input.connection] Named bridge connection; a resumed run retains its original launch context.
    * @param {string} [input.provider]
    * @param {string} [input.model]
    */
-  async start({ task, cwd, sessionId, provider, model }) {
+  async start({ task, cwd, sessionId, connection, provider, model }) {
     const text = task?.trim()
     if (!text) throw new Error('task must not be empty')
     if (text.length > 100_000) throw new Error('task exceeds the 100,000 character limit')
-    const resolvedCwd = await this.#resolveCwd(cwd)
-    const defaults = resolveModel(this.env)
-    const route = {
-      provider: provider?.trim() || defaults.provider,
-      model: model?.trim() || defaults.model,
-    }
-    if (!route.provider || !route.model) throw new Error('provider and model must not be empty')
-
     const requested = sessionId?.trim()
-    if (requested) {
-      const existing = this.runs.get(requested)
-      if (existing?.status === 'running') throw new Error(`session already has an active run: ${requested}`)
+    const previous = requested ? this.runs.get(requested) : undefined
+    if (previous?.status === 'running') throw new Error(`session already has an active run: ${requested}`)
+    let context
+    if (previous) {
+      if ((connection !== undefined && connection.trim() !== previous.connection)
+        || (provider !== undefined && provider.trim() !== previous.provider)
+        || (model !== undefined && model.trim() !== previous.model)
+        || (cwd !== undefined && await this.#resolveCwd(cwd) !== previous.cwd)) {
+        throw new Error('A resumed session must keep its original connection, cwd, provider and model')
+      }
+      context = previous.context
+    } else {
+      context = resolveConnection({ connection, cwd, provider, model }, this.env)
+      context.cwd = await this.#resolveCwd(context.cwd)
     }
+    const resolvedCwd = context.cwd
+    const route = { provider: context.provider, model: context.model }
     const activeSession = requested || `session-${randomUUID()}`
-
-    const runtime = await this.#ensureRuntime({ cwd: resolvedCwd, ...route })
+    const runtime = await this.#ensureRuntime(context)
     if (requested && !runtime.hasSession(activeSession)) {
       // A caller-supplied id names a persisted session; the SDK runtime must
       // restore it rather than create a fresh empty one with the same id.
@@ -92,6 +93,9 @@ export class DshManager {
     const run = {
       sessionId: activeSession,
       cwd: resolvedCwd,
+      connection: context.connection,
+      profile: context.profile,
+      context,
       provider: route.provider,
       model: route.model,
       baselineSeq,
@@ -117,6 +121,8 @@ export class DshManager {
     return {
       ...snapshot,
       cwd: run.cwd,
+      connection: run.connection,
+      profile: run.profile,
       provider: run.provider,
       model: run.model,
       messageId: run.messageId,
@@ -208,6 +214,8 @@ export class DshManager {
       .map((run) => ({
         sessionId: run.sessionId,
         cwd: run.cwd,
+        connection: run.connection,
+        profile: run.profile,
         provider: run.provider,
         model: run.model,
         status: run.status,
@@ -217,17 +225,16 @@ export class DshManager {
       }))
   }
 
-  info() {
+  info(input = {}) {
     return {
-      dshCommand: resolveDshCommand(this.env),
-      dshHome: resolveDshHome(this.env),
-      apiKeyAvailable: Boolean(readApiKey(resolveDshHome(this.env), this.env)),
-      defaultRoute: resolveModel(this.env),
+      ...connectionInfo(resolveConnection(input, this.env)),
+      connections: Object.keys(readBridgeConfig(this.env).connections),
       runtimes: [...this.runtimes.entries()].map(([key, runtime]) => ({
         key,
         cwd: runtime.cwd,
         provider: runtime.provider,
         model: runtime.model,
+        profile: runtime.profile,
         pid: runtime.child?.pid ?? null,
         exited: runtime.exited,
         initialized: runtime.initialized,

@@ -203,12 +203,11 @@ node scripts/install-run-monitor.mjs --dsh-home "$env:DSH_HOME" --uninstall
 ## 验证与限制
 
 ```sh
-pnpm test          # 纯 node:test：配置、状态归约、manager、发布器、插件、安装脚本
-pnpm run test:smoke  # 真实 API 的 MCP smoke，费用较高
-pnpm run test:e2e    # 新进程 MCP 端到端：运行中状态、真实 token、文件核验、计时冻结
+pnpm test           # 核心配置、会话状态、状态发布、插件主机和安装安全
+pnpm run test:smoke  # 一次真实 API 回复，并核验面板状态文件
 ```
 
-单元与进程测试无需真实 API。`test:smoke` 使用当前连接实际调用模型，验证回复、续聊和 workspace 内写文件，会产生提供商调用费用。通过 `DSH_MCP_TEST_CWD` 可指定测试工作目录。插件自身的测试在 `plugins/dsh-run-monitor/test/`，对真实 `lib/client.js` bundle 用最小 hooks/timers harness 驱动，不做源码字符串匹配。
+默认测试无需真实 API，保留核心行为与安装安全检查；界面通过实际加载验收。`test:smoke` 使用当前连接调用一次模型并核验面板状态发布，会产生一次提供商调用费用。通过 `DSH_MCP_TEST_CWD` 可指定测试工作目录。
 
 SDK 没有 per-turn cancel；`dsh_shutdown` 停止本桥启动的 runtime。SDK 会话不会出现在桌面窗口中；面板展示的是这些 SDK 任务，不是桌面当前聊天。长任务推荐 `dsh_start` + `dsh_wait`；客户端自行设置足够的 MCP 请求超时。
 

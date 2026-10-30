@@ -108,12 +108,13 @@ stdio 使用标准输出传 MCP 消息，启动日志写到标准错误。MCP �
 | `dsh_sessions` | 列出本进程启动过的会话 |
 | `dsh_shutdown` | 停掉本桥启动的 SDK runtime |
 
-`dsh_info`、`dsh_start`、`dsh_run` 接受可选 `connection`。后两者还可覆盖 `provider`、`model` 和 `cwd`。
+`dsh_info`、`dsh_start`、`dsh_run` 接受可选 `connection`。后两者还可覆盖 `provider`、`model` 和 `cwd`，并可传 `title`（1–120 字符）作为任务卡片标题；未提供时取任务开头的短句。
 
 ```text
 dsh_info { connection: "company" }
 dsh_run { connection: "company", task: "Reply with BRIDGE_OK. Do not use tools." }
 dsh_start { connection: "personal", task: "实现 X 并跑测试" }
+dsh_start { title: "实现只读会话详情页", task: "具体实现要求…", cwd: "D:/workspace/example-repo" }
 dsh_wait { sessionId: "session-…" }
 ```
 
@@ -182,7 +183,7 @@ dsh_wait { sessionId: "session-…" }
 
 运行中的 `durationMs`、`lastEventAgeMs`、当前 step/工具的 `elapsedMs` 会在每次心跳发布和面板读取时按 `startedAt` / `lastEvent.time` 重新投影，即使长时间执行期间没有新事件，用时和“最近活动”也会继续走；`statusLine` 同步重建。终态和过期/停止态保持冻结，不再外推增长。
 
-状态文件只含：桥/实例 id、pid、版本、状态、心跳；任务的 sessionId、cwd、provider/model、状态、时间、用时、当前 step/工具名、最近事件、脱敏 usage 汇总。**不含**提示词、助手正文、工具参数、工具结果、凭据。
+状态文件只含任务短标题和指标：桥/实例 id、pid、版本、状态、心跳；任务的 sessionId、cwd、provider/model、状态、时间、用时、当前 step/工具名、最近事件、脱敏 usage 汇总。**不含**完整任务正文、助手正文、工具参数、工具结果或凭据。会话正文通过另一个按任务授权的只读方法按需读取。
 
 安装独立面板插件（只应在审查通过后对正式 profile 执行）：
 
@@ -204,10 +205,15 @@ node scripts/install-run-monitor.mjs --dsh-home "$env:DSH_HOME" --uninstall
 
 「DSH 任务」默认显示 agent 卡片概览，通过「进行中」「异常任务」「已结束」切换，支持搜索、模型筛选和任务详情。「连接管理」为独立页面，返回时保留筛选和选中任务。启用新增归档逻辑需重载 DSH 插件后端，并重启 MCP bridge 使首次任务前不写空文件的规则生效。详情及会话正文入口的接入说明见 [插件文档](plugins/dsh-run-monitor/README.md#任务概览)。
 
+点击任务卡片进入只读会话大页面，查看任务指令、助手回复和可展开的工具执行过程；运行指标另设页签，输入在查看期间禁用。会话接口需重载 DSH 插件后端，新 `title` 参数需重启 MCP bridge 后重新发现工具 schema。
+
 ```sh
-pnpm test           # 核心配置、会话状态、状态发布、插件主机和安装安全
+node --test --test-name-pattern="task titles" test/manager.test.mjs  # 例：仅定向检查任务标题
+pnpm test           # 全量回归，仅在用户明确要求时运行
 pnpm run test:smoke  # 一次真实 API 回复，并核验面板状态文件
 ```
+
+日常修改只做简单定向测试，选取本次改动直接涉及的少量场景，通过即收尾；不默认运行全量、不反复扩大测试范围。会话页优先检查打开/返回、只读、消息与工具显示；标题修改只检查标题传递和展示。
 
 默认测试无需真实 API，保留核心行为与安装安全检查；界面通过实际加载验收。`test:smoke` 使用当前连接调用一次模型并核验面板状态发布，会产生一次提供商调用费用。通过 `DSH_MCP_TEST_CWD` 可指定测试工作目录。
 

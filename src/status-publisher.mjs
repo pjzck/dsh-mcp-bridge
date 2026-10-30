@@ -3,8 +3,10 @@
  * plugins can observe SDK tasks without opening a port or sharing a process.
  *
  * - one file per publisher instance, atomic replace via temp file + rename;
+ * - no file exists until the first task publishes a non-empty snapshot;
  * - heartbeat only while a run is active (idle processes stop rewriting);
- * - a graceful shutdown writes a terminal `stopped` tombstone;
+ * - after the first task a graceful shutdown writes a terminal `stopped`
+ *   tombstone;
  * - a crashed/hung publisher stops heartbeating, so readers age the file out
  *   instead of showing a stale task as running forever.
  */
@@ -204,6 +206,8 @@ export class StatusPublisher {
     this.timer = undefined
     this.queue = Promise.resolve()
     this.closed = false
+    /** True after the first non-empty snapshot was written successfully. */
+    this.published = false
   }
 
   async start() {
@@ -284,6 +288,10 @@ export class StatusPublisher {
   }
 
   async #writeNow() {
+    // Before the first task there is no history worth sharing. Writing an
+    // empty idle/stopped snapshot here would make every short-lived MCP
+    // connection leave a file that only ages into the archive.
+    if (!this.published && this.runs.length === 0) return
     const payload = this.payload()
     const text = `${JSON.stringify(payload)}\n`
     await fs.mkdir(this.dir, { recursive: true })
@@ -295,6 +303,7 @@ export class StatusPublisher {
       await fs.unlink(tmp).catch(() => {})
       throw error
     }
+    this.published = true
   }
 }
 

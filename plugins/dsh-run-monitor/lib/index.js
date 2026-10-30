@@ -7,9 +7,9 @@
  * opens a port and never reads task prompts, tool arguments or credentials.
  */
 
-import { readdir, lstat, readFile } from 'node:fs/promises'
+import { readdir, lstat, readFile, mkdir, rename } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 
 const inject = ['connection']
 const API_PATH = '/api/dsh-run-monitor'
@@ -18,6 +18,12 @@ const MAX_FILE_BYTES = 256 * 1024
 const MAX_FILES = 64
 const MAX_RUNS = 50
 const MAX_RUN_AGE_MS = 7 * 24 * 60 * 60 * 1000
+const ARCHIVE_DIR_NAME = 'archive'
+const DEFAULT_ARCHIVE_GRACE_MS = 60_000
+const MAINTENANCE_INTERVAL_MS = 60_000
+const MAX_ARCHIVE_FILES = 256
+/** Last successful archive pass per resolved status directory. */
+const maintenanceAt = new Map()
 
 function text(value, limit) {
   return typeof value === 'string' ? value.slice(0, limit) : undefined
@@ -296,19 +302,321 @@ export function sanitizeStatusDocument(raw, { now = Date.now(), maxRunAgeMs = MA
   }
 }
 
+function timestamp(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+/**
+ * Return true only when the pid is known to exist. A missing process yields
+ * `false`; permission errors are `undefined` (unknown), because the caller
+ * must keep the snapshot rather than guess.
+ */
+function defaultIsProcessAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'ESRCH' ? false : undefined
+  }
+}
+
+function processState(pid, isProcessAlive) {
+  try {
+    const alive = isProcessAlive(pid)
+    if (alive === false) return 'dead'
+    if (alive === true) return 'alive'
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+async function ensureArchiveDirectory(archiveDir) {
+  let stat
+  try {
+    stat = await lstat(archiveDir)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    await mkdir(archiveDir, { recursive: true })
+    stat = await lstat(archiveDir)
+  }
+  if (stat.isSymbolicLink()) throw new Error('archive path is a symbolic link')
+  if (!stat.isDirectory()) throw new Error('archive path is not a directory')
+}
+
+function sameSnapshot(before, after) {
+  return before.dev === after.dev
+    && before.ino === after.ino
+    && before.size === after.size
+    && before.mtimeMs === after.mtimeMs
+}
+
+/**
+ * Move bridge snapshots whose process is confirmed dead and whose newest
+ * timestamps are older than the grace period into `<statusDir>/archive`.
+ * Every file is handled in isolation: no snapshot is deleted, an existing
+ * archive target is never overwritten and the process is never signalled.
+ */
+export async function maintainStatusFiles({
+  statusDir,
+  now = Date.now(),
+  graceMs = DEFAULT_ARCHIVE_GRACE_MS,
+  isProcessAlive = defaultIsProcessAlive,
+} = {}) {
+  const dir = statusDir ?? resolveStatusDir()
+  const archiveDir = join(dir, ARCHIVE_DIR_NAME)
+  const result = { statusDir: dir, archiveDir, now, archived: [], kept: [], errors: [] }
+  let names
+  try {
+    names = await readdir(dir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return result
+    throw error
+  }
+  const grace = typeof graceMs === 'number' && Number.isFinite(graceMs)
+    ? Math.max(0, graceMs)
+    : DEFAULT_ARCHIVE_GRACE_MS
+  let archiveReady = false
+  for (const name of names.filter((entry) => FILE_RE.test(entry)).sort()) {
+    try {
+      const source = join(dir, name)
+      const before = await lstat(source)
+      if (before.isSymbolicLink() || !before.isFile()) {
+        result.kept.push({ file: name, reason: 'not a regular file' })
+        continue
+      }
+      if (before.size > MAX_FILE_BYTES) {
+        result.kept.push({ file: name, reason: 'status file too large' })
+        continue
+      }
+      let raw
+      try {
+        raw = JSON.parse(await readFile(source, 'utf8'))
+      } catch {
+        result.kept.push({ file: name, reason: 'invalid JSON' })
+        continue
+      }
+      if (!raw || typeof raw !== 'object' || raw.schemaVersion !== 1 || raw.kind !== 'dsh-run-monitor') {
+        result.kept.push({ file: name, reason: 'unsupported status document' })
+        continue
+      }
+      const bridge = raw.bridge
+      if (!bridge || typeof bridge !== 'object') {
+        result.kept.push({ file: name, reason: 'missing bridge record' })
+        continue
+      }
+      if (typeof bridge.instanceId !== 'string' || `${bridge.instanceId}.json` !== name) {
+        result.kept.push({ file: name, reason: 'file name does not match instanceId' })
+        continue
+      }
+      const pid = bridge.pid
+      if (!Number.isSafeInteger(pid) || pid <= 0) {
+        result.kept.push({ file: name, reason: 'invalid pid' })
+        continue
+      }
+      const firstState = processState(pid, isProcessAlive)
+      if (firstState !== 'dead') {
+        result.kept.push({ file: name, reason: firstState === 'alive' ? 'process is alive' : 'process liveness unknown' })
+        continue
+      }
+      const heartbeat = timestamp(bridge.heartbeatAt)
+      const heartbeatInterval = clamp(number(bridge.heartbeatIntervalMs), 5000, 1000, 60_000)
+      const staleAfter = clamp(number(bridge.staleAfterMs), heartbeatInterval * 3, 1000, 24 * 60 * 60 * 1000)
+      if (bridge.state === 'running' && heartbeat !== undefined && now - heartbeat <= staleAfter) {
+        result.kept.push({ file: name, reason: 'running heartbeat is fresh' })
+        continue
+      }
+      const stamps = [
+        before.mtimeMs,
+        timestamp(bridge.heartbeatAt),
+        timestamp(bridge.updatedAt),
+        timestamp(bridge.startedAt),
+      ].filter((value) => value !== undefined)
+      if (!(now - Math.max(...stamps) > grace)) {
+        result.kept.push({ file: name, reason: 'within grace period' })
+        continue
+      }
+
+      if (!archiveReady) {
+        await ensureArchiveDirectory(archiveDir)
+        archiveReady = true
+      }
+      const target = join(archiveDir, name)
+      try {
+        await lstat(target)
+        result.kept.push({ file: name, reason: 'archive target exists' })
+        continue
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+      }
+
+      // The file and the process can change while this pass runs. Re-check
+      // both immediately before the move.
+      const secondState = processState(pid, isProcessAlive)
+      if (secondState !== 'dead') {
+        result.kept.push({ file: name, reason: secondState === 'alive' ? 'process is alive' : 'process liveness unknown' })
+        continue
+      }
+      const after = await lstat(source)
+      if (after.isSymbolicLink() || !after.isFile() || !sameSnapshot(before, after)) {
+        result.kept.push({ file: name, reason: 'source snapshot changed' })
+        continue
+      }
+
+      await rename(source, target)
+      result.archived.push({
+        file: name,
+        pid,
+        runs: Array.isArray(raw.runs) ? raw.runs.length : 0,
+      })
+    } catch (error) {
+      result.errors.push({ file: name, error: String(error?.message ?? error).slice(0, 200) })
+    }
+  }
+  return result
+}
+
+/**
+ * Read archived snapshots. Only records that still contain task entries are
+ * returned, and archived runs are never advertised as running. Counts are
+ * best-effort: when a limit or a corrupt file makes them inexact, `truncated`
+ * is set so the caller does not present them as complete.
+ */
+async function readArchivedStatusFiles({ statusDir, now, maxBytes, maxFiles }) {
+  const dir = join(statusDir, ARCHIVE_DIR_NAME)
+  const summary = { files: 0, runs: 0 }
+  let names
+  try {
+    const archiveStat = await lstat(dir)
+    if (archiveStat.isSymbolicLink() || !archiveStat.isDirectory()) return { files: [], summary, truncated: true }
+    names = await readdir(dir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { files: [], summary, truncated: false }
+    return { files: [], summary, truncated: true }
+  }
+  const candidates = names.filter((entry) => FILE_RE.test(entry))
+  summary.files = candidates.length
+  const discovered = []
+  let truncated = false
+  for (const name of candidates) {
+    try {
+      discovered.push({ name, stat: await lstat(join(dir, name)) })
+    } catch {
+      discovered.push({ name, stat: undefined })
+      truncated = true
+    }
+  }
+  discovered.sort((a, b) => (b.stat?.mtimeMs ?? 0) - (a.stat?.mtimeMs ?? 0)
+    || String(b.name).localeCompare(String(a.name)))
+  if (discovered.length > maxFiles) truncated = true
+  const files = []
+  for (const entry of discovered.slice(0, maxFiles)) {
+    const file = basename(entry.name)
+    try {
+      const stat = entry.stat
+      if (stat === undefined || stat.isSymbolicLink() || !stat.isFile()) {
+        truncated = true
+        continue
+      }
+      if (stat.size > maxBytes) {
+        truncated = true
+        continue
+      }
+      let parsed
+      try {
+        parsed = JSON.parse(await readFile(join(dir, entry.name), 'utf8'))
+      } catch {
+        truncated = true
+        continue
+      }
+      if (Array.isArray(parsed?.runs) && parsed.runs.length > MAX_RUNS) truncated = true
+      const sanitized = sanitizeStatusDocument(parsed, { now, maxRunAgeMs: Number.POSITIVE_INFINITY })
+      if (sanitized.error !== undefined) {
+        truncated = true
+        continue
+      }
+      for (const run of sanitized.runs) {
+        if (run.isRunning === true || run.status === 'running' || run.status === 'queued' || run.status === 'stale') {
+          run.isRunning = false
+          run.status = 'stopped'
+          run.statusLine = '已归档 · 桥进程已退出'
+        }
+        // A live tool/step belongs to the dead process; keep only terminal data.
+        run.currentTools = []
+        delete run.currentTool
+        delete run.currentStep
+      }
+      summary.runs += sanitized.runs.length
+      if (sanitized.runs.length === 0) continue
+      const archivedAt = new Date(stat.mtimeMs)
+      files.push({
+        file,
+        archived: true,
+        ...(Number.isFinite(archivedAt.getTime()) ? { archivedAt: archivedAt.toISOString() } : {}),
+        bridge: sanitized.bridge,
+        runs: sanitized.runs,
+      })
+    } catch {
+      truncated = true
+    }
+  }
+  return { files, summary, truncated }
+}
+
 /**
  * Read every bridge-owned status file. Missing status directory is an empty
  * state; corrupt, oversized, non-regular and unsupported files become entries
  * with `error` instead of failing the whole panel.
+ *
+ * Before reading, snapshots of confirmed-dead processes older than the grace
+ * period are moved into the archive. This maintenance runs at most once per
+ * minute per directory; a failed pass is retried on the next read and never
+ * breaks reading.
  */
-export async function readStatusFiles({ statusDir, now = Date.now(), maxBytes = MAX_FILE_BYTES, maxFiles = MAX_FILES } = {}) {
+export async function readStatusFiles({
+  statusDir,
+  now = Date.now(),
+  maxBytes = MAX_FILE_BYTES,
+  maxFiles = MAX_FILES,
+  graceMs = DEFAULT_ARCHIVE_GRACE_MS,
+  isProcessAlive,
+  maintain = true,
+  maxArchiveFiles = MAX_ARCHIVE_FILES,
+} = {}) {
   const dir = statusDir ?? resolveStatusDir()
+  if (maintain) {
+    const key = resolve(dir)
+    const last = maintenanceAt.get(key)
+    if (last === undefined || now - last >= MAINTENANCE_INTERVAL_MS) {
+      try {
+        const report = await maintainStatusFiles({ statusDir: dir, now, graceMs, isProcessAlive })
+        // A pass with file-level errors is retried on the next read so that a
+        // transient permission/rename failure recovers immediately.
+        if (report.errors.length === 0) maintenanceAt.set(key, now)
+      } catch {
+        // Keep reading; the next call retries the archive pass.
+      }
+    }
+  }
   let names
   try {
     names = await readdir(dir)
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      return { statusDir: dir, now, files: [], missing: true }
+      return {
+        statusDir: dir,
+        now,
+        files: [],
+        archivedFiles: [],
+        archiveSummary: { files: 0, runs: 0 },
+        discoveredFiles: 0,
+        missing: true,
+      }
     }
     throw error
   }
@@ -360,15 +668,25 @@ export async function readStatusFiles({ statusDir, now = Date.now(), maxBytes = 
     const bRunning = b.bridge?.state === 'running' && !b.bridge?.stale ? 1 : 0
     return bRunning - aRunning || String(a.file).localeCompare(String(b.file))
   })
-  return { statusDir: dir, now, files, missing: false }
+  const archive = await readArchivedStatusFiles({ statusDir: dir, now, maxBytes, maxFiles: maxArchiveFiles })
+  return {
+    statusDir: dir,
+    now,
+    files,
+    archivedFiles: archive.files,
+    archiveSummary: archive.summary,
+    discoveredFiles: discovered.length,
+    missing: false,
+    ...(archive.truncated ? { truncated: true } : {}),
+  }
 }
 
 /** Create the testable request handler. */
-export function createStatusHandler({ statusDir, now = () => Date.now(), maxBytes } = {}) {
+export function createStatusHandler({ statusDir, now = () => Date.now(), maxBytes, graceMs, isProcessAlive, maintain } = {}) {
   return async function handle() {
     const at = now()
     try {
-      const value = await readStatusFiles({ statusDir, now: at, maxBytes })
+      const value = await readStatusFiles({ statusDir, now: at, maxBytes, graceMs, isProcessAlive, maintain })
       return { ok: true, value: { schemaVersion: 1, generatedAt: new Date(at).toISOString(), ...value } }
     } catch (error) {
       return { ok: false, error: { code: 'internal', message: String(error?.message ?? error), details: {} } }

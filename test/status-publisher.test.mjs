@@ -108,7 +108,7 @@ test('sanitizeRun rejects malformed window, turn and progress values', () => {
   assert.deepEqual(mixed.progress, { completedSteps: 2 })
 })
 
-test('publisher writes one atomic idle file and then a running heartbeat file', async () => {
+test('publisher writes no empty snapshot before the first task and then publishes atomically', async () => {
   const dir = path.join(root, 'atomic')
   const publisher = new StatusPublisher({
     dir,
@@ -117,15 +117,16 @@ test('publisher writes one atomic idle file and then a running heartbeat file', 
     staleAfterMs: 45,
     bridgeVersion: '9.9.9',
   })
-  await publisher.start()
   const file = path.join(dir, 'bridge-test.json')
-  let payload = await readPayload(file)
-  assert.equal(payload.bridge.state, 'idle')
-  assert.deepEqual(payload.runs, [])
+  await publisher.start()
+  await assert.rejects(fs.stat(file), (error) => error.code === 'ENOENT', 'start must not create an empty file')
+
+  await publisher.update({ state: 'idle', runs: [] })
+  await assert.rejects(fs.stat(file), (error) => error.code === 'ENOENT', 'idle without history must not create a file')
   assert.equal(publisher.timer, undefined)
 
   await publisher.update({ state: 'running', runs: [sanitizeRun(run())], updatedAt: 1_000 })
-  payload = await readPayload(file)
+  let payload = await readPayload(file)
   assert.equal(payload.bridge.state, 'running')
   assert.equal(payload.bridge.heartbeatIntervalMs, 15)
   assert.equal(payload.bridge.staleAfterMs, 45)
@@ -146,6 +147,28 @@ test('publisher writes one atomic idle file and then a running heartbeat file', 
 
   const entries = await fs.readdir(dir)
   assert.deepEqual(entries, ['bridge-test.json'])
+})
+
+test('publisher keeps empty idle and stopped snapshots after the first task', async () => {
+  const dir = path.join(root, 'retain')
+  const file = path.join(dir, 'bridge-retain.json')
+  const publisher = new StatusPublisher({ dir, instanceId: 'bridge-retain' })
+  await publisher.start()
+
+  await publisher.update({ state: 'running', runs: [sanitizeRun(run())] })
+  assert.equal((await readPayload(file)).bridge.state, 'running')
+
+  // Once a task has been published the file is history: an idle pass and the
+  // shutdown tombstone are still written, even when the caller clears runs.
+  await publisher.update({ state: 'idle', runs: [] })
+  let payload = await readPayload(file)
+  assert.equal(payload.bridge.state, 'idle')
+  assert.deepEqual(payload.runs, [])
+
+  await publisher.stop()
+  payload = await readPayload(file)
+  assert.equal(payload.bridge.state, 'stopped')
+  assert.deepEqual(payload.runs, [])
 })
 
 test('idle publisher stops rewriting and leaves other bridge files alone', async () => {

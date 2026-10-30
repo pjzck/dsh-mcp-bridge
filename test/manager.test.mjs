@@ -210,9 +210,10 @@ test('list and info expose the same live summary and publication is sanitized', 
   const started = await startRun(manager)
   runtime.emit([
     event(1, 'turn/start', 1_100, { turn: 1 }),
-    event(2, 'step/start', 1_200, { turn: 1, step: 1 }),
-    event(3, 'tool/call', 1_300, { turn: 1, step: 1, callId: 'c', name: 'pwsh', arguments: 'TOP SECRET' }),
-    event(4, 'assistant/message', 1_400, {
+    event(2, 'request/context', 1_150, { provider: 'p', model: 'm', contextWindow: 64_000 }),
+    event(3, 'step/start', 1_200, { turn: 1, step: 1 }),
+    event(4, 'tool/call', 1_300, { turn: 1, step: 1, callId: 'c', name: 'pwsh', arguments: 'TOP SECRET' }),
+    event(5, 'assistant/message', 1_400, {
       turn: 1,
       step: 1,
       usage: usage(10, 2, 3, 0),
@@ -226,6 +227,9 @@ test('list and info expose the same live summary and publication is sanitized', 
   assert.equal(latest.runs.length, 1)
   assert.match(latest.runs[0].statusLine, /运行中/)
   assert.equal(latest.runs[0].usage.totalTokens, 15)
+  assert.equal(latest.runs[0].currentTurn, 1)
+  assert.equal(latest.runs[0].contextWindow, 64_000)
+  assert.deepEqual(latest.runs[0].progress, { completedSteps: 0, toolCalls: 1, completedToolCalls: 0 })
   assert.equal(JSON.stringify(latest).includes('TOP SECRET'), false)
   assert.equal(JSON.stringify(latest).includes('PRIVATE ANSWER'), false)
 
@@ -235,14 +239,22 @@ test('list and info expose the same live summary and publication is sanitized', 
   assert.match(list[0].statusLine, /运行中/)
   assert.equal(list[0].usage.totalTokens, 15)
   assert.equal(list[0].currentTool.name, 'pwsh')
+  assert.equal(list[0].currentTurn, 1)
+  assert.equal(list[0].contextWindow, 64_000)
+  assert.deepEqual(list[0].progress, { completedSteps: 0, toolCalls: 1, completedToolCalls: 0 })
   const info = manager.info()
   assert.equal(info.statusPublisher.enabled, true)
   assert.equal(info.runs.length, 1)
 
-  runtime.emit([event(5, 'turn/end', 2_500, { turn: 1, reason: { kind: 'completed' } })])
+  runtime.emit([
+    event(6, 'tool/result', 1_500, { turn: 1, step: 1, message: { toolCallId: 'c', isError: false } }),
+    event(7, 'step/end', 1_600, { turn: 1, step: 1 }),
+    event(8, 'turn/end', 2_500, { turn: 1, reason: { kind: 'completed' } }),
+  ])
   now = 3_000
   await manager.publish()
   assert.equal(updates[updates.length - 1].state, 'idle')
   assert.equal(updates[updates.length - 1].runs[0].isRunning, false)
   assert.equal(updates[updates.length - 1].runs[0].durationMs, 1_400)
+  assert.deepEqual(updates[updates.length - 1].runs[0].progress, { completedSteps: 1, toolCalls: 1, completedToolCalls: 1 })
 })

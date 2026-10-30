@@ -50,6 +50,9 @@ function document(overrides = {}) {
       currentTools: [{ name: 'pwsh', callId: 'c1' }],
       lastEvent: { seq: 7, type: 'tool/call', time: NOW - 500, ageMs: 500 },
       lastEventAgeMs: 500,
+      currentTurn: 2,
+      contextWindow: 128_000,
+      progress: { completedSteps: 3, toolCalls: 4, completedToolCalls: 2 },
       usage: {
         scope: 'run',
         source: 'provider',
@@ -103,6 +106,9 @@ test('multiple bridge files, staleness, corruption and oversized files are isola
   assert.equal(byFile['bridge-a.json'].bridge.stale, false)
   assert.equal(byFile['bridge-a.json'].runs[0].isRunning, true)
   assert.equal(byFile['bridge-a.json'].runs[0].usage.totalTokens, 130)
+  assert.equal(byFile['bridge-a.json'].runs[0].currentTurn, 2)
+  assert.equal(byFile['bridge-a.json'].runs[0].contextWindow, 128_000)
+  assert.deepEqual(byFile['bridge-a.json'].runs[0].progress, { completedSteps: 3, toolCalls: 4, completedToolCalls: 2 })
   assert.equal(JSON.stringify(byFile['bridge-a.json']).includes('PRIVATE ANSWER'), false)
   assert.equal(JSON.stringify(byFile['bridge-a.json']).includes('TOP SECRET'), false)
   assert.equal(JSON.stringify(byFile['bridge-a.json']).includes('sk-secret'), false)
@@ -161,6 +167,33 @@ test('running reads project duration and last-activity age at read time', () => 
   }), { now: NOW })
   assert.equal(finished.runs[0].durationMs, 5_000, 'terminal duration must stay frozen')
   assert.equal(finished.runs[0].lastEventAgeMs, 4_000, 'terminal age must stay frozen')
+})
+
+test('host rejects malformed live window, turn and progress values', () => {
+  const invalid = sanitizeStatusDocument(document({
+    runs: [{
+      ...document().runs[0],
+      currentTurn: -1,
+      contextWindow: 0,
+      progress: { completedSteps: 1.5, toolCalls: Number.MAX_SAFE_INTEGER + 1, completedToolCalls: '2' },
+    }],
+  }), { now: NOW }).runs[0]
+  assert.equal('currentTurn' in invalid, false)
+  assert.equal('contextWindow' in invalid, false)
+  assert.equal('progress' in invalid, false)
+
+  // Valid counters survive next to malformed siblings; the bad values never do.
+  const mixed = sanitizeStatusDocument(document({
+    runs: [{
+      ...document().runs[0],
+      currentTurn: 7,
+      contextWindow: 32_000,
+      progress: { completedSteps: 5, toolCalls: Number.NaN, completedToolCalls: 4 },
+    }],
+  }), { now: NOW }).runs[0]
+  assert.equal(mixed.currentTurn, 7)
+  assert.equal(mixed.contextWindow, 32_000)
+  assert.deepEqual(mixed.progress, { completedSteps: 5, completedToolCalls: 4 })
 })
 
 test('host registers one authenticated POST endpoint and serves the sanitized state', async () => {

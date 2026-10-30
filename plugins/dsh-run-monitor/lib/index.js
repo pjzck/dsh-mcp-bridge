@@ -27,6 +27,25 @@ function number(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+function count(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function positiveCount(value) {
+  const parsed = count(value)
+  return parsed !== undefined && parsed > 0 ? parsed : undefined
+}
+
+function sanitizeProgress(value) {
+  if (!value || typeof value !== 'object') return undefined
+  const out = {}
+  for (const key of ['completedSteps', 'toolCalls', 'completedToolCalls']) {
+    const parsed = count(value[key])
+    if (parsed !== undefined) out[key] = parsed
+  }
+  return Object.keys(out).length === 0 ? undefined : out
+}
+
 function pick(source, keys) {
   const out = {}
   for (const key of keys) {
@@ -177,6 +196,12 @@ function sanitizeRun(run) {
     const value = number(run[key])
     if (value !== undefined) out[key] = value
   }
+  const currentTurn = count(run.currentTurn)
+  if (currentTurn !== undefined) out.currentTurn = currentTurn
+  const contextWindow = positiveCount(run.contextWindow)
+  if (contextWindow !== undefined) out.contextWindow = contextWindow
+  const progress = sanitizeProgress(run.progress)
+  if (progress !== undefined) out.progress = progress
   if (run.currentStep && typeof run.currentStep === 'object') out.currentStep = pick(run.currentStep, ['turn', 'step', 'startedAt', 'elapsedMs'])
   if (run.lastEvent && typeof run.lastEvent === 'object') out.lastEvent = pick(run.lastEvent, ['seq', 'type', 'time', 'ageMs'])
   if (Array.isArray(run.currentTools)) {

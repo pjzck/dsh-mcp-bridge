@@ -71,6 +71,43 @@ test('sanitizeRun keeps only the shared status contract', () => {
   assert.match(sanitized.statusLine, /运行中/)
 })
 
+test('sanitizeRun passes live window, turn and progress fields through when valid', () => {
+  const sanitized = sanitizeRun(run({
+    currentTurn: 3,
+    contextWindow: 128_000,
+    progress: { completedSteps: 2, toolCalls: 3, completedToolCalls: 1 },
+  }))
+  assert.equal(sanitized.currentTurn, 3)
+  assert.equal(sanitized.contextWindow, 128_000)
+  assert.deepEqual(sanitized.progress, { completedSteps: 2, toolCalls: 3, completedToolCalls: 1 })
+})
+
+test('sanitizeRun rejects malformed window, turn and progress values', () => {
+  const invalid = sanitizeRun(run({
+    currentTurn: -1,
+    contextWindow: 0,
+    progress: { completedSteps: 1.5, toolCalls: -2, completedToolCalls: '3' },
+  }))
+  assert.equal('currentTurn' in invalid, false)
+  assert.equal('contextWindow' in invalid, false)
+  assert.equal('progress' in invalid, false)
+
+  const overflow = sanitizeRun(run({
+    currentTurn: Number.MAX_SAFE_INTEGER + 1,
+    contextWindow: Number.MAX_SAFE_INTEGER + 1,
+    progress: { completedSteps: Number.NaN, toolCalls: Number.POSITIVE_INFINITY },
+  }))
+  assert.equal('currentTurn' in overflow, false)
+  assert.equal('contextWindow' in overflow, false)
+  assert.equal('progress' in overflow, false)
+
+  // Valid counters survive next to malformed siblings; the bad values never do.
+  const mixed = sanitizeRun(run({
+    progress: { completedSteps: 2, toolCalls: '3', completedToolCalls: Number.NaN },
+  }))
+  assert.deepEqual(mixed.progress, { completedSteps: 2 })
+})
+
 test('publisher writes one atomic idle file and then a running heartbeat file', async () => {
   const dir = path.join(root, 'atomic')
   const publisher = new StatusPublisher({

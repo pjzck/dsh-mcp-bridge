@@ -23,6 +23,10 @@ function isCount(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
+function isPositiveCount(value) {
+  return isCount(value) && value > 0
+}
+
 /** Add token counts only while the exact integer result stays representable. */
 function safeAdd(...values) {
   let total = 0
@@ -177,7 +181,7 @@ export class RunState {
      * provider sample is not a complete usage source, even if its
      * `assistant/message` arrived without `data.usage`. Each retry creates a
      * separate attempt so a later attempt cannot hide behind an earlier one.
-     * @type {Map<string, {turn:number, step:number, startedAt:number, endedAt?:number, sawSettlement:boolean, sawUsage:boolean, boundaryMissing:boolean, attempts:Array<{index:number, startedAt:number, sawSettlement:boolean, sawUsage:boolean}>}>}
+     * @type {Map<string, {turn:number, step:number, startedAt:number, endedAt?:number, sawStepEnd:boolean, sawSettlement:boolean, sawUsage:boolean, boundaryMissing:boolean, attempts:Array<{index:number, startedAt:number, sawSettlement:boolean, sawUsage:boolean}>}>}
      */
     this.stepStates = new Map()
     this.turnBoundaryMissing = false
@@ -231,6 +235,7 @@ export class RunState {
         step,
         startedAt: at,
         endedAt: undefined,
+        sawStepEnd: false,
         sawSettlement: false,
         sawUsage: false,
         // A settlement/step boundary without a matching step/start cannot
@@ -261,6 +266,7 @@ export class RunState {
     const state = this.#ensureStep(turn, step, at)
     if (state === undefined) return
     if (state.endedAt === undefined) state.endedAt = at
+    state.sawStepEnd = true
   }
 
   #finalizeTurn(at) {
@@ -467,7 +473,11 @@ export class RunState {
         break
       }
       case 'request/context':
-        if (isCount(data.contextWindow) && data.contextWindow > 0) this.contextWindow = data.contextWindow
+        // The official agent loop appends this record only when the provider,
+        // model or window changes, and omits `contextWindow` when the route
+        // has no declared capacity. Replace the slot wholesale: retaining the
+        // previous window after a model switch would publish a stale value.
+        this.contextWindow = isPositiveCount(data.contextWindow) ? data.contextWindow : undefined
         break
       default:
         break
@@ -512,6 +522,29 @@ export class RunState {
     this.usageUpdatedAt = at
     this.usageLastSeq = seq
     return true
+  }
+
+  /**
+   * Compact progress counters for the panel. A step counts only when a real
+   * `step/end` closed its lifecycle; a step closed implicitly by `turn/end`
+   * keeps its `endedAt` for duration bookkeeping but is not reported complete.
+   * No total step count or percentage exists, because the run does not know
+   * how many steps it will take.
+   */
+  #progressView() {
+    let completedSteps = 0
+    for (const step of this.stepStates.values()) {
+      if (step.sawStepEnd === true && step.endedAt !== undefined) completedSteps += 1
+    }
+    let completedToolCalls = 0
+    for (const tool of this.toolCalls.values()) {
+      if (tool.status === 'completed') completedToolCalls += 1
+    }
+    return {
+      completedSteps,
+      toolCalls: this.toolCalls.size,
+      completedToolCalls,
+    }
   }
 
   #recentToolCalls(now) {
@@ -694,7 +727,7 @@ export class RunState {
       startedAtMs: startedAt,
       finishedAtMs: finishedAt,
       durationMs: startedAt === undefined ? null : Math.max(0, (finishedAt ?? now) - startedAt),
-      currentTurn: this.currentTurn ?? null,
+      currentTurn: isCount(this.currentTurn) ? this.currentTurn : null,
       currentStep: this.currentStep === undefined ? null : {
         turn: this.currentStep.turn,
         step: this.currentStep.step,
@@ -703,6 +736,7 @@ export class RunState {
       },
       currentTool: currentTools[0] ?? null,
       currentTools,
+      progress: this.#progressView(),
       toolCalls: this.#recentToolCalls(now),
       assistantText: this.assistantText,
       lastEvent,
@@ -715,7 +749,7 @@ export class RunState {
       })),
       events: this.recentEvents.map((event) => ({ seq: event.seq, type: event.type, time: event.time })),
       turnEnd: this.turnEnd,
-      contextWindow: this.contextWindow ?? null,
+      contextWindow: isPositiveCount(this.contextWindow) ? this.contextWindow : null,
       usage: usage.usage,
       usageUnavailableReason: usage.usage === null ? usage.reason : null,
       eventsSeen: this.eventsSeen,

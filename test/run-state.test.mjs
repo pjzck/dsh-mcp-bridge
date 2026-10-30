@@ -235,3 +235,71 @@ test('turn errors and interruption map to terminal statuses', () => {
   interrupted.apply(event(2, 'turn/end', 1_100, { turn: 1, reason: { kind: 'interrupted' } }))
   assert.equal(interrupted.view(1_200).status, 'interrupted')
 })
+
+test('request/context replaces the window and clears it when the route omits one', () => {
+  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
+  assert.equal(state.view(1_000).contextWindow, null)
+
+  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
+  state.apply(event(2, 'request/context', 1_100, { provider: 'p', model: 'm', contextWindow: 128_000 }))
+  assert.equal(state.view(1_200).contextWindow, 128_000)
+  // The window survives unrelated events and turns.
+  state.apply(event(3, 'turn/start', 1_300, { turn: 2 }))
+  assert.equal(state.view(1_400).contextWindow, 128_000)
+
+  // A model switch with its own declared capacity updates the window.
+  state.apply(event(4, 'request/context', 1_500, { provider: 'p', model: 'm2', contextWindow: 64_000 }))
+  assert.equal(state.view(1_600).contextWindow, 64_000)
+
+  // The official record omits contextWindow when the new route has no
+  // declared capacity; the previous window must not survive that switch.
+  state.apply(event(5, 'request/context', 1_700, { provider: 'p', model: 'm3' }))
+  assert.equal(state.view(1_800).contextWindow, null)
+
+  // Malformed capacities are unknown, not carried over from the last request.
+  state.apply(event(6, 'request/context', 1_900, { provider: 'p', model: 'm3', contextWindow: 32_000 }))
+  assert.equal(state.view(2_000).contextWindow, 32_000)
+  state.apply(event(7, 'request/context', 2_100, { provider: 'p', model: 'm4', contextWindow: 0 }))
+  assert.equal(state.view(2_200).contextWindow, null)
+  state.apply(event(8, 'request/context', 2_300, { provider: 'p', model: 'm5', contextWindow: 1.5 }))
+  assert.equal(state.view(2_400).contextWindow, null)
+})
+
+test('currentTurn is exposed only as a non-negative safe integer', () => {
+  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
+  assert.equal(state.view(1_000).currentTurn, null)
+  state.apply(event(1, 'turn/start', 1_100, { turn: 3 }))
+  assert.equal(state.view(1_200).currentTurn, 3)
+  state.apply(event(2, 'turn/start', 1_300, { turn: -1 }))
+  assert.equal(state.view(1_400).currentTurn, null)
+  state.apply(event(3, 'turn/start', 1_500, { turn: 1.25 }))
+  assert.equal(state.view(1_600).currentTurn, null)
+  state.apply(event(4, 'turn/start', 1_700, { turn: '9' }))
+  assert.equal(state.view(1_800).currentTurn, null)
+})
+
+test('progress counts only real step ends and tool statuses', () => {
+  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
+  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
+  state.apply(event(2, 'step/start', 1_100, { turn: 1, step: 1 }))
+  state.apply(event(3, 'tool/call', 1_200, { turn: 1, step: 1, callId: 'a', name: 'read' }))
+  state.apply(event(4, 'tool/result', 1_300, { turn: 1, step: 1, message: { toolCallId: 'a', isError: false } }))
+  state.apply(event(5, 'tool/call', 1_400, { turn: 1, step: 1, callId: 'b', name: 'pwsh' }))
+  state.apply(event(6, 'tool/result', 1_500, { turn: 1, step: 1, message: { toolCallId: 'b', isError: true } }))
+
+  // The first step is still running, so no step counts as completed yet.
+  assert.deepEqual(state.view(1_550).progress, { completedSteps: 0, toolCalls: 2, completedToolCalls: 1 })
+
+  state.apply(event(7, 'step/end', 1_600, { turn: 1, step: 1 }))
+  state.apply(event(8, 'step/start', 1_700, { turn: 1, step: 2 }))
+  state.apply(event(9, 'tool/call', 1_800, { turn: 1, step: 2, callId: 'c', name: 'edit' }))
+  state.apply(event(10, 'step/end', 1_900, { turn: 1, step: 2 }))
+  // The tool without a result became unknown when its step ended.
+  assert.deepEqual(state.view(1_950).progress, { completedSteps: 2, toolCalls: 3, completedToolCalls: 1 })
+
+  state.apply(event(11, 'step/start', 2_000, { turn: 1, step: 3 }))
+  state.apply(event(12, 'turn/end', 2_100, { turn: 1, reason: { kind: 'interrupted' } }))
+  // turn/end closes the open step for duration bookkeeping, but no step/end
+  // arrived, so it is not reported as a completed step.
+  assert.deepEqual(state.view(2_200).progress, { completedSteps: 2, toolCalls: 3, completedToolCalls: 1 })
+})

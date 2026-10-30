@@ -7,7 +7,7 @@ const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf
 
 // Exercise the registered view through its public controls without a browser
 // dependency. Effects, fetch and timers stay controllable for outage scenarios.
-async function mount(files, props = {}) {
+async function mount(files, props = {}, extra = {}) {
   const state = [], refs = [], effects = [], timers = new Map()
   let si = 0, ri = 0, initialized = false, nextTimer = 0, fail = false, component, plugin, cleanup
   const React = {
@@ -19,7 +19,7 @@ async function mount(files, props = {}) {
   const document = { hidden: false, querySelector: () => ({}), addEventListener() {}, removeEventListener() {} }
   vm.runInNewContext(source, {
     window: { __ModuleLoader__: { load({ factory }) { plugin = factory(() => React) } } }, document,
-    fetch: async () => ({ ok: !fail, status: fail ? 503 : 200, json: async () => ({ ok: true, value: { files } }) }),
+    fetch: async () => ({ ok: !fail, status: fail ? 503 : 200, json: async () => ({ ok: true, value: { files, ...extra } }) }),
     AbortController, setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, { fn, ms }); return id }, clearTimeout: id => timers.delete(id),
   })
   plugin.apply({ get: () => ({ inject: (name, setup) => setup(), register(options, view) { assert.equal(options.name, 'conversation.view'); component = view } }) })
@@ -45,7 +45,7 @@ test('overview hides idle bridges and history; cards expose real progress and wi
   assert.match(text(cards(tree)[0]), /占用量未上报/)
   assert.doesNotMatch(text(tree), /archived/)
   assert.ok([...app.timers.values()].some(t => t.ms === 3000))
-  clickText(tree, '历史记录')
+  clickText(tree, '已结束')
   assert.equal(cards(app.render()).length, 1)
   assert.match(text(cards(app.render())[0]), /archived/)
   app.cleanup()
@@ -90,7 +90,7 @@ test('outage removes cached tasks from live count and suppresses old current-too
   await app.flush()
   assert.equal(cards(app.render()).length, 0)
   assert.match(text(app.render()), /读取失败/)
-  clickText(app.render(), '需关注')
+  clickText(app.render(), '异常任务')
   assert.equal(cards(app.render()).length, 1)
   assert.doesNotMatch(text(cards(app.render())[0]), /pwsh/)
   assert.match(text(cards(app.render())[0]), /缓存快照/)
@@ -105,7 +105,7 @@ test('queued, stale, corrupt and unknown-usage states remain inspectable without
   assert.match(text(cards(tree)[0]), /排队中/)
   assert.match(text(cards(tree)[0]), /未上报/)
   assert.match(text(tree), /1 个桥状态文件读取失败/)
-  clickText(tree, '需关注')
+  clickText(tree, '异常任务')
   assert.equal(cards(app.render()).length, 1)
   assert.match(text(cards(app.render())[0]), /连接中断/)
   app.cleanup()
@@ -113,7 +113,7 @@ test('queued, stale, corrupt and unknown-usage states remain inspectable without
 
 test('large history loads in batches and changing filters closes the previous detail', async () => {
   const app = await mount([file('a', Array.from({ length: 65 }, (_, i) => run('session-' + i, { status: 'succeeded', isRunning: false })))])
-  clickText(app.render(), '历史记录')
+  clickText(app.render(), '已结束')
   assert.equal(cards(app.render()).length, 30)
   clickText(app.render(), '加载更多')
   assert.equal(cards(app.render()).length, 60)
@@ -122,5 +122,40 @@ test('large history loads in batches and changing filters closes the previous de
   find(app.render(), n => n.props['aria-label'] === '搜索任务').props.onChange({ target: { value: 'session-64' } })
   assert.equal(cards(app.render()).length, 1)
   assert.equal(nodes(app.render()).some(n => n.type === 'aside'), false)
+  app.cleanup()
+})
+
+test('plain labels separate running, abnormal and ended work; empty connections stay collapsed', async () => {
+  const app = await mount([file('busy', [run('session-now')]), ...Array.from({ length: 40 }, (_, i) => file('idle-' + i, [], { state: 'idle' }))])
+  const tree = app.render()
+  const views = find(tree, n => n.props['aria-label'] === '任务视图')
+  assert.match(text(views), /进行中/)
+  assert.match(text(views), /异常任务/)
+  assert.match(text(views), /已结束/)
+  assert.doesNotMatch(text(views), /活跃|需关注/)
+  const connections = find(tree, n => n.props['aria-label'] === '桥连接信息')
+  const idle = find(connections, n => n.props['aria-label'] === '空闲桥')
+  assert.equal(idle.type, 'details')
+  assert.equal(idle.props.open, undefined)
+  assert.match(text(idle.children[0]), /40/)
+  assert.equal(cards(tree).length, 1)
+  app.cleanup()
+})
+
+test('archived tasks remain in ended work without inflating abnormal counts or current connections', async () => {
+  const archive = { ...file('archive-old', [run('session-old', { status: 'stale', isRunning: false })]), archived: true }
+  const app = await mount([file('current', [run('session-now')])], {}, { archivedFiles: [archive], archiveSummary: { files: 63, runs: 1 } })
+  let tree = app.render()
+  assert.equal(cards(tree).length, 1)
+  assert.doesNotMatch(text(find(tree, n => n.props['aria-label'] === '桥连接信息')), /archive-old/)
+  assert.match(text(find(tree, n => n.props['aria-label'] === '桥连接信息')), /63 个已归档/)
+  clickText(tree, '异常任务')
+  assert.equal(cards(app.render()).length, 0)
+  clickText(app.render(), '已结束')
+  tree = app.render()
+  assert.equal(cards(tree).length, 1)
+  assert.match(text(cards(tree)[0]), /已归档/)
+  cards(tree)[0].props.onClick()
+  assert.match(text(find(app.render(), n => n.props['aria-label'] === '任务详情')), /session-old/)
   app.cleanup()
 })

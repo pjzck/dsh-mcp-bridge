@@ -178,7 +178,7 @@ dsh_wait { sessionId: "session-…" }
 
 ## 状态发布与 DSH 面板插件
 
-桥会把脱敏的紧凑状态发布到 `$DSH_HOME/storages/dsh-run-monitor/bridge-<pid>-<id>.json`，每个桥进程一个文件，先写临时文件再原子 rename。运行中约每 5 秒心跳，空闲时停止重写；正常退出写 `stopped`。进程崩溃后心跳停止，面板按文件里的 `staleAfterMs` 显示“状态已过期”，不会把旧文件永远显示为运行中。桥不会扫描或删除其他桥的文件。
+桥在首次执行任务时，将脱敏的紧凑状态发布到 `$DSH_HOME/storages/dsh-run-monitor/bridge-<pid>-<id>.json`，从未执行任务的连接不创建空文件。每个桥进程一个文件，先写临时文件再原子 rename。运行中约每 5 秒心跳，空闲时停止重写；正常退出写 `stopped`。进程崩溃后心跳停止，面板按文件里的 `staleAfterMs` 显示“状态已过期”。宿主会把确认进程退出且超过宽限期的快照移入同目录 `archive/`，任务历史继续保留。
 
 运行中的 `durationMs`、`lastEventAgeMs`、当前 step/工具的 `elapsedMs` 会在每次心跳发布和面板读取时按 `startedAt` / `lastEvent.time` 重新投影，即使长时间执行期间没有新事件，用时和“最近活动”也会继续走；`statusLine` 同步重建。终态和过期/停止态保持冻结，不再外推增长。
 
@@ -202,7 +202,7 @@ node scripts/install-run-monitor.mjs --dsh-home "$env:DSH_HOME" --uninstall
 
 ## 验证与限制
 
-「DSH 任务」现在使用活跃 agent 卡片概览，历史与需关注任务分开查看，支持搜索、模型筛选和任务详情。空闲桥收在连接信息中；新增的步骤计数与上下文窗口字段需重启 MCP bridge 后发布。详情及会话正文入口的接入说明见 [插件文档](plugins/dsh-run-monitor/README.md#任务概览)。
+「DSH 任务」默认显示 agent 卡片概览，通过「进行中」「异常任务」「已结束」切换，支持搜索、模型筛选和任务详情。「连接管理」为独立页面，返回时保留筛选和选中任务。启用新增归档逻辑需重载 DSH 插件后端，并重启 MCP bridge 使首次任务前不写空文件的规则生效。详情及会话正文入口的接入说明见 [插件文档](plugins/dsh-run-monitor/README.md#任务概览)。
 
 ```sh
 pnpm test           # 核心配置、会话状态、状态发布、插件主机和安装安全
@@ -214,7 +214,7 @@ pnpm run test:smoke  # 一次真实 API 回复，并核验面板状态文件
 SDK 没有 per-turn cancel；`dsh_shutdown` 停止本桥启动的 runtime。SDK 会话不会出现在桌面窗口中；面板展示的是这些 SDK 任务，不是桌面当前聊天。长任务推荐 `dsh_start` + `dsh_wait`；客户端自行设置足够的 MCP 请求超时。
 
 - `usage` 只覆盖本 run 的 provider 上报值；子代理、续聊前历史、字符启发式估算都不计入。
-- 崩溃的桥只靠心跳过期识别；面板不会删除旧文件，也不会修改其他桥的数据。
+- 任务实时状态依赖心跳；旧快照归档还会确认 PID 已退出，并保留存活或无法确认的进程记录。归档不删除 SDK 会话及正文。
 - 修改桥源码后需要重启 MCP server；`dsh_shutdown` 只重启 SDK runtime，不会重新加载桥源码。完整权限允许任务读写工作区外文件和执行命令，请仅向桥提交已授权的任务。
 
 ## License

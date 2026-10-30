@@ -7,27 +7,26 @@ const source = await readFile(new URL('../lib/client.js', import.meta.url), 'utf
 
 // Exercise the registered view through its public controls without a browser
 // dependency. Effects, fetch and timers stay controllable for outage scenarios.
-async function mount(files, props = {}, extra = {}) {
-  const state = [], refs = [], effects = [], timers = new Map()
-  let si = 0, ri = 0, initialized = false, nextTimer = 0, fail = false, component, plugin, cleanup
-  const React = {
-    createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity).filter(x => x !== null && x !== undefined && x !== false) }),
-    useState(initial) { const i = si++; if (!(i in state)) state[i] = initial; return [state[i], value => { state[i] = value }] },
-    useRef(initial) { const i = ri++; return refs[i] ||= { current: initial } },
-    useEffect(effect) { if (!initialized) effects.push(effect) },
+async function mount(files, props = {}, extra = {}, controls = {}) {
+  const state=[],refs=[],effects=[],timers=new Map()
+  let si=0,ri=0,ei=0,nextTimer=0,fail=false,component,plugin
+  const requests=[]
+  const React={
+    createElement:(type,props,...children)=>({type,props:props||{},children:children.flat(Infinity).filter(x=>x!==null&&x!==undefined&&x!==false)}),
+    useState(initial){const i=si++;if(!(i in state))state[i]=initial;return[state[i],value=>{state[i]=typeof value==='function'?value(state[i]):value}]},
+    useRef(initial){const i=ri++;return refs[i]||={current:initial}},
+    useEffect(effect,deps){const i=ei++;const previous=effects[i];if(!previous||!deps||deps.some((d,j)=>!Object.is(d,previous.deps?.[j]))){effects[i]={deps,effect,pending:true,cleanup:previous?.cleanup}}},
   }
-  const document = { hidden: false, querySelector: () => ({}), addEventListener() {}, removeEventListener() {} }
-  vm.runInNewContext(source, {
-    window: { __ModuleLoader__: { load({ factory }) { plugin = factory(() => React) } } }, document,
-    fetch: async () => ({ ok: !fail, status: fail ? 503 : 200, json: async () => ({ ok: true, value: { files, ...extra } }) }),
-    AbortController, setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, { fn, ms }); return id }, clearTimeout: id => timers.delete(id),
+  const document={hidden:false,querySelector:()=>({}),addEventListener(){},removeEventListener(){}}
+  vm.runInNewContext(source,{
+    window:{__ModuleLoader__:{load({factory}){plugin=factory(()=>React)}}},document,
+    fetch:async(_,init)=>{const body=JSON.parse(init.body);requests.push(body);if(controls.fetch)return controls.fetch(body,init);return{ok:!fail,status:fail?503:200,json:async()=>body.method==='transcript'?{ok:true,value:{entries:[],hasOlder:false,beforeSeq:null,lastSeq:null,...controls.transcript}}:{ok:true,value:{files,...extra}}}},
+    AbortController,setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,ms});return id},clearTimeout:id=>timers.delete(id),
   })
-  plugin.apply({ get: () => ({ inject: (name, setup) => setup(), register(options, view) { assert.equal(options.name, 'conversation.view'); component = view } }) })
-  const render = () => { si = 0; ri = 0; return component(props) }
-  render(); initialized = true
-  cleanup = effects[0]()
-  await new Promise(resolve => setImmediate(resolve))
-  return { render, timers, document, fail: () => { fail = true }, flush: () => new Promise(resolve => setImmediate(resolve)), cleanup }
+  plugin.apply({get:()=>({inject:(_,setup)=>setup(),register(options,view){assert.equal(options.name,'conversation.view');component=view}})})
+  const render=()=>{si=0;ri=0;ei=0;const tree=component(props);for(const e of effects){if(e.pending){e.pending=false;e.cleanup?.();e.cleanup=e.effect()}}return tree}
+  render();await new Promise(resolve=>setImmediate(resolve))
+  return{render,timers,document,requests,fail:()=>{fail=true},flush:()=>new Promise(resolve=>setImmediate(resolve)),cleanup:()=>{for(const e of effects)e.cleanup?.()}}
 }
 function nodes(node) { return !node || typeof node !== 'object' ? [] : [node, ...node.children.flatMap(nodes)] }
 function text(node) { return typeof node === 'string' || typeof node === 'number' ? String(node) : node?.children?.map(text).join(' ') || '' }
@@ -66,23 +65,25 @@ test('search and model controls filter cards and displayed usage together', asyn
   app.cleanup()
 })
 
-test('same session id on different bridges opens the correct detail; transcript action waits for integration', async () => {
-  let opened
-  const app = await mount([file('one', [run('session-same')]), file('two', [run('session-same', { cwd: 'D:/work/backend' })])], { onOpenSession: target => { opened = target } })
+test('same session id opens the correct full-page transcript and blocks input until returning', async () => {
+  let blocked=0,released=0
+  const app=await mount([file('one',[run('session-same')]),file('two',[run('session-same',{cwd:'D:/work/backend'})])],{blockComposer:()=>{blocked++;return()=>released++}})
   cards(app.render())[1].props.onClick()
-  let detail = find(app.render(), n => n.props['aria-label'] === '任务详情')
-  assert.match(text(detail), /two/)
-  clickText(detail, '打开会话')
-  assert.equal(opened.bridgeInstanceId, 'two')
-  detail.props.onKeyDown({ key: 'Escape' })
-  assert.equal(nodes(app.render()).some(n => n.type === 'aside'), false)
+  let tree=app.render()
+  assert.equal(cards(tree).length,0)
+  assert.equal(blocked,1)
+  await app.flush()
+  assert.equal(app.requests.find(r=>r.method==='transcript').bridgeInstanceId,'two')
+  clickText(app.render(),'运行信息')
+  tree=app.render()
+  assert.match(text(find(tree,n=>n.props['aria-label']==='任务会话详情')),/two/)
+  assert.equal(nodes(tree).some(n=>['input','textarea'].includes(n.type)),false)
+  find(tree,n=>n.props['aria-label']==='返回任务概览').props.onClick()
+  tree=app.render()
+  assert.equal(released,1)
+  assert.equal(cards(tree).length,2)
   app.cleanup()
-  const standalone = await mount([file('a', [run('session-a')])])
-  cards(standalone.render())[0].props.onClick()
-  assert.equal(find(standalone.render(), n => n.type === 'button' && text(n).startsWith('打开会话')).props.disabled, true)
-  standalone.cleanup()
 })
-
 test('outage removes cached tasks from live count and suppresses old current-tool claims', async () => {
   const app = await mount([file('a', [run('session-a')])])
   app.fail()
@@ -118,10 +119,11 @@ test('large history loads in batches and changing filters closes the previous de
   clickText(app.render(), '加载更多')
   assert.equal(cards(app.render()).length, 60)
   cards(app.render())[0].props.onClick()
-  assert.equal(nodes(app.render()).some(n => n.type === 'aside'), true)
+  assert.equal(nodes(app.render()).some(n => n.props['aria-label'] === '任务会话详情'), true)
+  find(app.render(), n => n.props['aria-label'] === '返回任务概览').props.onClick()
   find(app.render(), n => n.props['aria-label'] === '搜索任务').props.onChange({ target: { value: 'session-64' } })
   assert.equal(cards(app.render()).length, 1)
-  assert.equal(nodes(app.render()).some(n => n.type === 'aside'), false)
+  assert.equal(nodes(app.render()).some(n => n.props['aria-label'] === '任务会话详情'), false)
   app.cleanup()
 })
 
@@ -164,7 +166,8 @@ test('archived tasks remain in ended work without inflating abnormal counts or c
   assert.equal(cards(tree).length, 1)
   assert.match(text(cards(tree)[0]), /已归档/)
   cards(tree)[0].props.onClick()
-  assert.match(text(find(app.render(), n => n.props['aria-label'] === '任务详情')), /session-old/)
+  clickText(app.render(), '运行信息')
+  assert.match(text(find(app.render(), n => n.props['aria-label'] === '任务会话详情')), /session-old/)
   app.cleanup()
 })
 
@@ -172,12 +175,65 @@ test('connection page navigation preserves the task filter and selected task', a
   const app = await mount([file('a', [run('session-a'), run('session-b', { cwd: 'D:/work/backend' })])])
   find(app.render(), n => n.props['aria-label'] === '搜索任务').props.onChange({ target: { value: 'backend' } })
   cards(app.render())[0].props.onClick()
+  find(app.render(), n => n.props['aria-label'] === '返回任务概览').props.onClick()
   find(app.render(), n => n.props['aria-label'] === '打开连接管理').props.onClick()
   assert.equal(nodes(app.render()).some(n => n.props['aria-label'] === '搜索任务'), false)
-  assert.equal(nodes(app.render()).some(n => n.props['aria-label'] === '任务详情'), false)
+  assert.equal(nodes(app.render()).some(n => n.props['aria-label'] === '任务会话详情'), false)
   find(app.render(), n => n.props['aria-label'] === '返回任务概览').props.onClick()
   assert.equal(find(app.render(), n => n.props['aria-label'] === '搜索任务').props.value, 'backend')
   assert.equal(cards(app.render()).length, 1)
-  assert.match(text(find(app.render(), n => n.props['aria-label'] === '任务详情')), /session-b/)
+  assert.equal(cards(app.render())[0].props['aria-pressed'], true)
   app.cleanup()
+})
+
+test('transcript pagination and refresh preserve older records and update the same tool entry', async () => {
+  let refreshed=false
+  const files=[file('a',[run('session-a',{title:'实现只读会话详情页'})])]
+  const app=await mount(files,{}, {},{fetch:async body=>({ok:true,status:200,json:async()=>body.method==='state'?{ok:true,value:{files}}:{ok:true,value:body.beforeSeq!==undefined?{entries:[{id:'u',seq:1,time:100,kind:'user',text:'检查功能'}],hasOlder:false,beforeSeq:null,lastSeq:5}:{entries:[{id:'t',seq:3,time:200,kind:'tool',toolName:'pwsh',status:refreshed?'ok':'pending',result:refreshed?'61 passed':undefined},{id:'a',seq:5,time:300,kind:'assistant',text:'**检查完成**'}],hasOlder:true,beforeSeq:3,lastSeq:5}}})})
+  assert.match(text(cards(app.render())[0]),/实现只读会话详情页/)
+  cards(app.render())[0].props.onClick();app.render();await app.flush()
+  clickText(app.render(),'加载更早的记录');await app.flush()
+  assert.match(text(app.render()),/检查功能/)
+  refreshed=true;find(app.render(),n=>n.props['aria-label']==='刷新会话记录').props.onClick();await app.flush()
+  const tree=app.render()
+  assert.match(text(tree),/61 passed/)
+  assert.match(text(tree),/检查功能/)
+  assert.equal(nodes(tree).filter(n=>n.props.className==='drm-tool-entry').length,1)
+  assert.equal(nodes(tree).some(n=>['input','textarea'].includes(n.type)),false)
+  app.cleanup()
+})
+
+test('a late transcript response cannot replace the newly opened session', async () => {
+  let finishFirst
+  const files=[file('a',[run('session-a'),run('session-b',{cwd:'D:/work/backend'})])]
+  const app=await mount(files,{}, {},{fetch:async body=>{
+    if(body.method==='state')return{ok:true,json:async()=>({ok:true,value:{files}})}
+    if(body.sessionId==='session-a')return new Promise(resolve=>{finishFirst=()=>resolve({ok:true,json:async()=>({ok:true,value:{entries:[{id:'old',seq:1,kind:'assistant',text:'OLD_SESSION'}]}})})})
+    return{ok:true,json:async()=>({ok:true,value:{entries:[{id:'new',seq:1,kind:'assistant',text:'NEW_SESSION'}],hasOlder:false}})}
+  }})
+  cards(app.render())[0].props.onClick();app.render();await app.flush()
+  find(app.render(),n=>n.props['aria-label']==='返回任务概览').props.onClick();app.render()
+  cards(app.render())[1].props.onClick();app.render();await app.flush()
+  finishFirst();await app.flush()
+  assert.match(text(app.render()),/NEW_SESSION/)
+  assert.doesNotMatch(text(app.render()),/OLD_SESSION/)
+  app.cleanup()
+})
+
+test('native composer blocking preserves blocks owned by other plugins', () => {
+  let plugin,registration,current
+  const blocks={storeFor:()=>({getSnapshot:()=>current}),set:(_,value)=>{current=value}}
+  vm.runInNewContext(source,{window:{__ModuleLoader__:{load({factory}){plugin=factory(()=>({createElement(){}}))}}},document:{querySelector:()=>({})}})
+  const slots={inject:(_,fn)=>fn(),register:(options)=>{registration=options}}
+  plugin.apply({get:name=>name==='slots'?slots:{blocks}})
+  const api=registration.inject('outer-session')
+  const clear=api.blockComposer()
+  assert.match(current.reason,/只读/)
+  const another={reason:'another plugin'};current=another
+  clear()
+  assert.equal(current,another)
+  assert.equal(api.blockComposer(),undefined)
+  current=undefined
+  const release=api.blockComposer();release()
+  assert.equal(current,undefined)
 })

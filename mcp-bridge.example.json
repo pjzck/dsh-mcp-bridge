@@ -1,0 +1,26 @@
+{
+  "defaultConnection": "official-api",
+  "profile": "sdk",
+  "connections": {
+    "official-api": {
+      "provider": "deepseek-official",
+      "model": "deepseek-flash",
+      "baseURL": "https://api.deepseek.com",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    },
+    "company-api": {
+      "provider": "deepseek-official",
+      "model": "deepseek-flash",
+      "baseURL": "https://gateway.example.com/v1",
+      "apiKeyEnv": "COMPANY_API_KEY"
+    },
+    "custom-provider": {
+      "provider": "my-provider",
+      "model": "my-model",
+      "patches": [
+        "./provider.patch.yml"
+      ],
+      "apiKeyEnv": false
+    }
+  }
+}

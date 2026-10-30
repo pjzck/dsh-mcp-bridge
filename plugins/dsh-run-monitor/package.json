@@ -1,7 +1,7 @@
 {
   "name": "dsh-run-monitor",
   "version": "0.1.0",
-  "description": "DSH sidebar panel for SDK task runs published by dsh-mcp-bridge: status, duration, current tool, provider-reported token usage.",
+  "description": "DSH conversation View for SDK task runs published by dsh-mcp-bridge: status, duration, current tool, provider-reported token usage.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -16,7 +16,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-ui-conversation"
       ],
       "immediately": false
     }

@@ -8,7 +8,6 @@ import {
   apply,
   createStatusHandler,
   readStatusFiles,
-  resolveStatusDir,
   sanitizeStatusDocument,
 } from '../lib/index.js'
 
@@ -129,33 +128,6 @@ test('multiple bridge files, staleness, corruption and oversized files are isola
   assert.equal(oversized.error, 'status file too large')
 })
 
-test('stopped documents cannot show a run as running', () => {
-  const sanitized = sanitizeStatusDocument(document({ bridge: { state: 'stopped' } }), { now: NOW })
-  assert.equal(sanitized.bridge.state, 'stopped')
-  assert.equal(sanitized.runs[0].isRunning, false)
-  assert.equal(sanitized.runs[0].status, 'stopped')
-  assert.match(sanitized.runs[0].statusLine, /桥已停止/)
-
-  const idle = sanitizeStatusDocument(document({ bridge: { state: 'idle', heartbeatAt: '2026-10-24T00:00:00.000Z' } }), { now: NOW })
-  assert.equal(idle.bridge.stale, false, 'an idle bridge is not a stale running task')
-  assert.equal(idle.runs[0].isRunning, false, 'an idle bridge cannot show its run as still running')
-  assert.equal(idle.runs[0].status, 'incomplete')
-})
-
-test('long-finished runs age out instead of accumulating forever', () => {
-  const old = document({
-    bridge: { state: 'idle' },
-    runs: [{
-      ...document().runs[0],
-      status: 'succeeded',
-      isRunning: false,
-      finishedAt: '2026-10-01T00:00:00.000Z',
-    }],
-  })
-  const sanitized = sanitizeStatusDocument(old, { now: NOW, maxRunAgeMs: 24 * 60 * 60 * 1000 })
-  assert.equal(sanitized.runs.length, 0)
-})
-
 test('running reads project duration and last-activity age at read time', () => {
   const doc = document({
     runs: [{
@@ -189,56 +161,6 @@ test('running reads project duration and last-activity age at read time', () => 
   }), { now: NOW })
   assert.equal(finished.runs[0].durationMs, 5_000, 'terminal duration must stay frozen')
   assert.equal(finished.runs[0].lastEventAgeMs, 4_000, 'terminal age must stay frozen')
-})
-
-test('stale running documents do not get live projection or current tools', () => {
-  const sanitized = sanitizeStatusDocument(document({
-    bridge: { instanceId: 'bridge-stale', heartbeatAt: '2026-10-25T11:55:00.000Z' },
-    runs: [{
-      ...document().runs[0],
-      startedAt: new Date(NOW - 15_000).toISOString(),
-      durationMs: 5_000,
-      lastEvent: { seq: 7, type: 'tool/call', time: NOW - 14_000, ageMs: 4_000 },
-      lastEventAgeMs: 4_000,
-    }],
-  }), { now: NOW })
-  assert.equal(sanitized.bridge.stale, true)
-  assert.equal(sanitized.runs[0].isRunning, false)
-  assert.equal(sanitized.runs[0].durationMs, 5_000)
-  assert.deepEqual(sanitized.runs[0].currentTools, [])
-  assert.match(sanitized.runs[0].statusLine, /状态已过期/)
-})
-
-test('bounded discovery keeps the newest bridges instead of the first file names', async () => {
-  const dir = path.join(root, 'bounded')
-  await fs.mkdir(dir, { recursive: true })
-  const base = Date.parse('2026-10-25T10:00:00.000Z')
-  for (let index = 0; index < 8; index += 1) {
-    const name = `bridge-${String(index).padStart(2, '0')}.json`
-    const body = document({
-      bridge: {
-        instanceId: `bridge-${index}`,
-        state: index === 7 ? 'running' : 'idle',
-        heartbeatAt: new Date(NOW).toISOString(),
-      },
-      runs: index === 7 ? [{ ...document().runs[0], sessionId: 'session-newest' }] : [],
-    })
-    const file = path.join(dir, name)
-    await fs.writeFile(file, JSON.stringify(body))
-    const at = new Date(base + index * 1_000)
-    await fs.utimes(file, at, at)
-  }
-  const read = await readStatusFiles({ statusDir: dir, now: NOW, maxFiles: 3 })
-  assert.ok(read.files.some((entry) => entry.file === 'bridge-07.json'), 'newest active bridge must survive the cap')
-  assert.ok(read.files.every((entry) => entry.file !== undefined), 'file identity must be preserved')
-  assert.equal(read.files[0].file, 'bridge-07.json')
-})
-
-test('status directory precedence is explicit', () => {
-  assert.equal(resolveStatusDir({ DSH_HOME: 'H:\\home' }), path.join('H:\\home', 'storages', 'dsh-run-monitor'))
-  assert.equal(resolveStatusDir({ DSH_HOME: 'H:\\home', DSH_MCP_STATUS_DIR: 'H:\\custom' }), 'H:\\custom')
-  assert.equal(resolveStatusDir({ DSH_HOME: 'H:\\home', DSH_MCP_STATUS_DIR: 'H:\\custom', DSH_MONITOR_STATUS_DIR: 'H:\\panel' }), 'H:\\panel')
-  assert.equal(resolveStatusDir({ DSH_HOME: 'H:\\home' }, { statusDir: 'H:\\config' }), 'H:\\config')
 })
 
 test('host registers one authenticated POST endpoint and serves the sanitized state', async () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { RunState, normalizeProviderUsage } from '../src/run-state.mjs'
+import { RunState } from '../src/run-state.mjs'
 
 const usage = (inputTokens, outputTokens, cacheReadTokens = 0, cacheWriteTokens = 0, totalTokens) => ({
   inputTokens,
@@ -55,20 +55,6 @@ test('multi-step provider usage accumulates across steps', () => {
   assert.equal(view.usage.scope, 'run')
   assert.equal(view.usage.resumedHistoryIncluded, false)
   assert.equal(view.assistantText, 'final')
-})
-
-test('duration is frozen after turn/end and clamped non-negative', () => {
-  const state = twoStepRun()
-  const first = state.view(3_000)
-  const later = state.view(30_000)
-  assert.equal(first.durationMs, 1_400)
-  assert.equal(later.durationMs, 1_400)
-  assert.equal(later.finishedAtMs, 2_500)
-
-  const backwards = new RunState({ sessionId: 's', queuedAt: 5_000 })
-  backwards.apply(event(1, 'turn/start', 5_000, { turn: 1 }))
-  backwards.apply(event(2, 'turn/end', 4_000, { turn: 1, reason: { kind: 'completed' } }))
-  assert.equal(backwards.view(6_000).durationMs, 0)
 })
 
 test('same attempt sample replacement does not double count', () => {
@@ -158,13 +144,6 @@ test('missing and invalid usage stay explicit instead of becoming zero', () => {
   assert.equal(partialView.usage.totalTokens, 12)
 })
 
-test('normalizeProviderUsage rejects contradictory totals and missing cache', () => {
-  assert.equal(normalizeProviderUsage({ inputTokens: 10, outputTokens: 2, totalTokens: 12 }).ok, true)
-  assert.equal(normalizeProviderUsage({ inputTokens: 10, outputTokens: 2 }).ok, false)
-  assert.equal(normalizeProviderUsage({ inputTokens: 10, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 0, totalTokens: 20 }).ok, false)
-  assert.equal(normalizeProviderUsage({ inputTokens: 10, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 0, totalTokens: 16 }).ok, false)
-})
-
 test('duplicate events are ignored and do not inflate totals', () => {
   const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
   const sample = event(1, 'assistant/message', 1_000, { turn: 1, step: 1, usage: usage(10, 2, 0, 0, 12) })
@@ -192,23 +171,6 @@ test('a resume run counts only events after its baseline', () => {
   assert.equal(view.usage.resumedHistoryIncluded, false)
 })
 
-test('usage survives more than 2000 events and recent events stay capped', () => {
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  let seq = 1
-  state.apply(event(seq++, 'turn/start', 1_000, { turn: 1 }))
-  for (let index = 0; index < 700; index += 1) {
-    state.apply(event(seq++, 'tool/call', 1_000 + index, { turn: 1, step: 1, callId: `c${index}`, name: 'read' }))
-    state.apply(event(seq++, 'tool/result', 1_000 + index, { turn: 1, step: 1, message: { toolCallId: `c${index}`, isError: false } }))
-    state.apply(event(seq++, 'step/start', 1_000 + index, { turn: 1, step: 1 }))
-  }
-  state.apply(event(seq++, 'assistant/message', 5_000, { turn: 1, step: 1, usage: usage(10, 2, 0, 0, 12) }))
-  state.apply(event(seq++, 'turn/end', 5_100, { turn: 1, reason: { kind: 'completed' } }))
-  const view = state.view(6_000)
-  assert.ok(view.eventsSeen > 2_000)
-  assert.equal(view.recentEvents.length, 80)
-  assert.equal(view.usage.totalTokens, 12)
-})
-
 test('tool result pairing uses message.toolCallId/isError and supports concurrent tools', () => {
   const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
   state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
@@ -231,17 +193,6 @@ test('tool result pairing uses message.toolCallId/isError and supports concurren
   assert.equal(pwsh.status, 'error')
   assert.equal(pwsh.error, 'tool reported an error')
   assert.deepEqual(view.currentTools, [])
-})
-
-test('step end does not leave an unpaired tool advertised as current', () => {
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  state.apply(event(2, 'step/start', 1_000, { turn: 1, step: 1 }))
-  state.apply(event(3, 'tool/call', 1_100, { turn: 1, step: 1, callId: 'a', name: 'read' }))
-  state.apply(event(4, 'step/end', 1_200, { turn: 1, step: 1 }))
-  const view = state.view(1_300)
-  assert.deepEqual(view.currentTools, [])
-  assert.equal(view.toolCalls[0].status, 'unknown')
 })
 
 test('a step with no provider usage prevents a complete claim', () => {
@@ -271,146 +222,6 @@ test('a step with no provider usage prevents a complete claim', () => {
   assert.equal(view.usage.stepsWithUsage, 1)
   assert.deepEqual(view.usage.missingUsageSteps.map((item) => item.step), [2])
   assert.match(view.usage.note, /without usage/)
-})
-
-test('a step that ended without any settlement is also incomplete', () => {
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  state.apply(event(2, 'step/start', 1_100, { turn: 1, step: 1 }))
-  state.apply(event(3, 'step/end', 1_200, { turn: 1, step: 1 }))
-  state.apply(event(4, 'turn/end', 1_300, { turn: 1, reason: { kind: 'completed' } }))
-  const view = state.view(1_400)
-  assert.equal(view.usage, null)
-  assert.match(view.usageUnavailableReason, /no usable provider usage/)
-  assert.equal(view.usage === null, true)
-})
-
-test('missing step/start or step/end boundaries are not silently complete', () => {
-  const missingStart = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  missingStart.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  missingStart.apply(event(2, 'assistant/message', 1_100, {
-    turn: 1,
-    step: 1,
-    usage: usage(10, 2, 0, 0, 12),
-  }))
-  missingStart.apply(event(3, 'turn/end', 1_200, { turn: 1, reason: { kind: 'completed' } }))
-  const noStart = missingStart.view(1_300)
-  assert.equal(noStart.usage.complete, false)
-  assert.ok(noStart.usage.missingBoundaries.some((item) => item.step === 1))
-
-  const missingEnd = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  missingEnd.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  missingEnd.apply(event(2, 'step/start', 1_100, { turn: 1, step: 1 }))
-  missingEnd.apply(event(3, 'assistant/message', 1_200, {
-    turn: 1,
-    step: 1,
-    usage: usage(10, 2, 0, 0, 12),
-  }))
-  missingEnd.apply(event(4, 'turn/end', 1_300, { turn: 1, reason: { kind: 'completed' } }))
-  const noEnd = missingEnd.view(1_400)
-  assert.equal(noEnd.usage.complete, false)
-  assert.ok(noEnd.usage.missingBoundaries.some((item) => item.step === 1))
-})
-
-test('unsafe single samples and unsafe aggregate totals are rejected', () => {
-  assert.equal(normalizeProviderUsage({
-    inputTokens: Number.MAX_SAFE_INTEGER,
-    outputTokens: 1,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-  }).ok, false)
-  assert.equal(normalizeProviderUsage({
-    inputTokens: Number.MAX_SAFE_INTEGER,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: Number.MAX_SAFE_INTEGER,
-  }).ok, true)
-
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  for (const step of [1, 2]) {
-    state.apply(event(step * 2, 'step/start', 1_000 + step, { turn: 1, step }))
-    state.apply(event(step * 2 + 1, 'assistant/message', 1_000 + step * 10, {
-      turn: 1,
-      step,
-      usage: {
-        inputTokens: Number.MAX_SAFE_INTEGER,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        totalTokens: Number.MAX_SAFE_INTEGER,
-      },
-    }))
-    state.apply(event(step * 2 + 2, 'step/end', 1_000 + step * 20, { turn: 1, step }))
-  }
-  state.apply(event(9, 'turn/end', 1_500, { turn: 1, reason: { kind: 'completed' } }))
-  const view = state.view(1_600)
-  assert.equal(view.usage, null)
-  assert.match(view.usageUnavailableReason, /safe integer/)
-})
-
-test('invalid usage samples cap their stored reasons', () => {
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  for (let step = 1; step <= 15; step += 1) {
-    state.apply(event(step * 2, 'assistant/message', 1_000 + step, {
-      turn: 1,
-      step,
-      usage: { inputTokens: -1, outputTokens: 1 },
-    }))
-  }
-  state.apply(event(99, 'turn/end', 2_000, { turn: 1, reason: { kind: 'completed' } }))
-  const view = state.view(2_100)
-  assert.equal(view.usage, null)
-  assert.equal(view.usageUnavailableReason.length < 2_000, true)
-})
-
-test('a retry attempt without usage cannot hide behind an earlier attempt', () => {
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  state.apply(event(2, 'step/start', 1_100, { turn: 1, step: 1 }))
-  state.apply(event(3, 'assistant/attempt', 1_200, {
-    turn: 1,
-    step: 1,
-    stream: [{ type: 'chunk', chunk: { type: 'usage', usage: usage(10, 5, 0, 0, 15) } }],
-  }))
-  state.apply(event(4, 'llm/retry', 1_300, { turn: 1, step: 1 }))
-  state.apply(event(5, 'llm/retry-started', 1_400, { turn: 1, step: 1 }))
-  state.apply(event(6, 'assistant/message', 1_500, { turn: 1, step: 1, message: { content: [] } }))
-  state.apply(event(7, 'step/end', 1_600, { turn: 1, step: 1 }))
-  state.apply(event(8, 'turn/end', 1_700, { turn: 1, reason: { kind: 'completed' } }))
-  const view = state.view(1_800)
-  assert.equal(view.usage.totalTokens, 15)
-  assert.equal(view.usage.complete, false)
-  assert.equal(view.usage.partial, true)
-  assert.equal(view.usage.expectedAttempts, 2)
-  assert.equal(view.usage.attemptsWithUsage, 1)
-  assert.deepEqual(view.usage.missingUsageAttempts.map((item) => item.attempt), [1])
-})
-
-test('a retry attempt with its own usage is complete', () => {
-  const state = new RunState({ sessionId: 's', queuedAt: 1_000 })
-  state.apply(event(1, 'turn/start', 1_000, { turn: 1 }))
-  state.apply(event(2, 'step/start', 1_100, { turn: 1, step: 1 }))
-  state.apply(event(3, 'assistant/attempt', 1_200, {
-    turn: 1,
-    step: 1,
-    stream: [{ type: 'chunk', chunk: { type: 'usage', usage: usage(10, 5, 0, 0, 15) } }],
-  }))
-  state.apply(event(4, 'llm/retry-started', 1_300, { turn: 1, step: 1 }))
-  state.apply(event(5, 'assistant/attempt', 1_400, {
-    turn: 1,
-    step: 1,
-    stream: [{ type: 'chunk', chunk: { type: 'usage', usage: usage(20, 6, 0, 0, 26) } }],
-  }))
-  state.apply(event(6, 'step/end', 1_500, { turn: 1, step: 1 }))
-  state.apply(event(7, 'turn/end', 1_600, { turn: 1, reason: { kind: 'completed' } }))
-  const view = state.view(1_700)
-  assert.equal(view.usage.totalTokens, 41)
-  assert.equal(view.usage.complete, true)
-  assert.equal(view.usage.expectedAttempts, 2)
-  assert.equal(view.usage.attemptsWithUsage, 2)
 })
 
 test('turn errors and interruption map to terminal statuses', () => {

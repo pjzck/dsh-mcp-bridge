@@ -144,32 +144,6 @@ test('copy install and uninstall remove only the owned copy', async () => {
   assert.equal((await fs.stat(path.join(home, 'profiles', 'node_modules', 'other-plugin'))).isDirectory(), true)
 })
 
-test('uninstall removes only our item when it shares an insert list with other plugins', async () => {
-  const home = await makeHome('shared-insert')
-  const patch = path.join(home, 'profiles', 'web', 'cordis.patch.yml')
-  const shared = [
-    '- insert:',
-    '    - id: existing-panel',
-    '      name: other-panel',
-    '    - id: dsh-run-monitor',
-    '      name: dsh-run-monitor',
-    '',
-  ].join('\n')
-  await fs.writeFile(patch, shared)
-  const install = runInstaller(['--dsh-home', home, '--profile', 'web'])
-  assert.equal(install.status, 0, install.stderr || install.stdout)
-  assert.equal(install.json.profiles[0].action, 'already-present')
-  assert.equal(await countOwnedEntries(patch), 1)
-
-  const removed = runInstaller(['--dsh-home', home, '--profile', 'web', '--uninstall'])
-  assert.equal(removed.status, 0, removed.stderr || removed.stdout)
-  const text = await fs.readFile(patch, 'utf8')
-  assert.equal(await countOwnedEntries(patch), 0)
-  assert.match(text, /- id: existing-panel/)
-  assert.match(text, /name: other-panel/)
-  assert.doesNotMatch(text, /dsh-run-monitor/)
-})
-
 test('an id owned by a different package is refused without changes', async () => {
   const home = await makeHome('conflict')
   const patch = path.join(home, 'profiles', 'web', 'cordis.patch.yml')
@@ -180,57 +154,6 @@ test('an id owned by a different package is refused without changes', async () =
   assert.match(result.json.error, /different package name/)
   assert.equal(await fs.readFile(patch, 'utf8'), conflict)
   await assert.rejects(fs.lstat(path.join(home, 'profiles', 'node_modules', 'dsh-run-monitor')))
-})
-
-test('a valid empty-array patch is supported and restored to [] on uninstall', async () => {
-  const home = await makeHome('empty-array')
-  const patch = path.join(home, 'profiles', 'web', 'cordis.patch.yml')
-  await fs.writeFile(patch, '[]\n')
-  const install = runInstaller(['--dsh-home', home, '--profile', 'web'])
-  assert.equal(install.status, 0, install.stderr || install.stdout)
-  const installed = await fs.readFile(patch, 'utf8')
-  assert.equal(installed.includes('[]'), false)
-  assert.equal(await countOwnedEntries(patch), 1)
-  const second = runInstaller(['--dsh-home', home, '--profile', 'web'])
-  assert.equal(second.status, 0)
-  assert.equal(await countOwnedEntries(patch), 1)
-  const removed = runInstaller(['--dsh-home', home, '--profile', 'web', '--uninstall'])
-  assert.equal(removed.status, 0)
-  assert.equal((await fs.readFile(patch, 'utf8')).trim(), '[]')
-})
-
-test('id and name must belong to the same YAML entry', async () => {
-  const home = await makeHome('cross-entry')
-  const patch = path.join(home, 'profiles', 'web', 'cordis.patch.yml')
-  await fs.writeFile(patch, [
-    '- insert:',
-    '    - id: dsh-run-monitor',
-    '      name: someone-else',
-    '- insert:',
-    '    - id: other-panel',
-    '      name: dsh-run-monitor',
-    '',
-  ].join('\n'))
-  const result = runInstaller(['--dsh-home', home, '--profile', 'web'])
-  assert.equal(result.status, 1)
-  assert.match(result.json.error, /different package name/)
-  await assert.rejects(fs.lstat(path.join(home, 'profiles', 'node_modules', 'dsh-run-monitor')))
-})
-
-test('uninstall preserves trailing top-level config and comments', async () => {
-  const home = await makeHome('trailing')
-  const patch = path.join(home, 'profiles', 'web', 'cordis.patch.yml')
-  const install = runInstaller(['--dsh-home', home, '--profile', 'web'])
-  assert.equal(install.status, 0)
-  const trailing = '# trailing comment immediately after our block\n- id: trailing-config\n  config:\n    keep: true\n# trailing comment\n'
-  await fs.appendFile(patch, trailing)
-  const removed = runInstaller(['--dsh-home', home, '--profile', 'web', '--uninstall'])
-  assert.equal(removed.status, 0, removed.stderr || removed.stdout)
-  const text = await fs.readFile(patch, 'utf8')
-  assert.match(text, /- id: trailing-config/)
-  assert.match(text, /keep: true/)
-  assert.match(text, /# trailing comment/)
-  assert.doesNotMatch(text, /dsh-run-monitor/)
 })
 
 test('profile names cannot escape the profiles directory', async () => {

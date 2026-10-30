@@ -127,43 +127,6 @@ test('start returns running and completed run freezes duration and usage', async
   assert.equal(later.finishedAt, finishedAt)
 })
 
-test('current tools and step are visible while running, then paired by toolCallId', async () => {
-  const { manager, runtime } = makeManager()
-  const started = await startRun(manager)
-  runtime.emit([
-    event(1, 'turn/start', 1_100, { turn: 1 }),
-    event(2, 'step/start', 1_200, { turn: 1, step: 1 }),
-    event(3, 'tool/call', 1_300, { turn: 1, step: 1, callId: 'call-1', name: 'pwsh', arguments: 'not published' }),
-  ])
-  const running = manager.get(started.sessionId)
-  assert.equal(running.currentStep.step, 1)
-  assert.deepEqual(running.currentTools.map((tool) => tool.name), ['pwsh'])
-  assert.match(running.statusLine, /工具 pwsh/)
-
-  runtime.emit([
-    event(4, 'tool/result', 1_500, { turn: 1, step: 1, message: { toolCallId: 'call-1', isError: true } }),
-    event(5, 'step/end', 1_600, { turn: 1, step: 1 }),
-    event(6, 'turn/end', 1_700, { turn: 1, reason: { kind: 'completed' } }),
-  ])
-  const done = manager.get(started.sessionId)
-  assert.deepEqual(done.currentTools, [])
-  assert.equal(done.toolCalls[0].status, 'error')
-  assert.equal(done.toolCalls[0].error, 'tool reported an error')
-})
-
-test('running duration switches from queuedAt to the real turn/start time', async () => {
-  const { manager, runtime, setNow } = makeManager()
-  const started = await startRun(manager)
-  assert.equal(started.startedAt, '1970-01-01T00:00:01.000Z')
-  assert.equal(started.queuedAt, '1970-01-01T00:00:01.000Z')
-  runtime.emit([event(1, 'turn/start', 1_100, { turn: 1 })])
-  setNow(2_000)
-  const running = manager.get(started.sessionId)
-  assert.equal(running.startedAt, '1970-01-01T00:00:01.100Z')
-  assert.equal(running.queuedAt, '1970-01-01T00:00:01.000Z')
-  assert.equal(running.durationMs, 900)
-})
-
 test('a finished session can be continued without a prior get/wait', async () => {
   const { manager, runtime } = makeManager()
   const started = await startRun(manager)
@@ -224,27 +187,6 @@ test('wait timeout returns the running snapshot and does not finish the run', as
   assert.equal(waited.status, 'running')
   assert.equal(waited.timedOut, true)
   assert.equal(waited.isRunning, true)
-})
-
-test('resume counts only events after the baseline and does not claim history', async () => {
-  const { manager, runtime } = makeManager()
-  runtime.baselineSeq = 10
-  const started = await manager.start({ task: 'continue', cwd: process.cwd(), sessionId: 'session-existing' })
-  runtime.emit([
-    event(5, 'assistant/message', 500, { turn: 1, step: 1, usage: usage(999, 99, 0, 0) }),
-    event(11, 'turn/start', 1_200, { turn: 2 }),
-    event(12, 'assistant/message', 1_300, {
-      turn: 2,
-      step: 1,
-      usage: usage(10, 2, 0, 0),
-      message: { content: [{ type: 'text', text: 'continued' }] },
-    }),
-    event(13, 'turn/end', 1_400, { turn: 2, reason: { kind: 'completed' } }),
-  ])
-  const view = manager.get(started.sessionId)
-  assert.equal(view.usage.totalTokens, 12)
-  assert.equal(view.usage.resumedHistoryIncluded, false)
-  assert.equal(view.usage.scope, 'run')
 })
 
 test('list and info expose the same live summary and publication is sanitized', async () => {

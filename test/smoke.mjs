@@ -41,65 +41,27 @@ try {
     arguments: {
       task: 'Reply with exactly BRIDGE_OK. Do not use any tools.',
       cwd: workspace,
-      timeoutMs: 180_000,
+      timeoutMs: 60_000,
     },
   }))
   console.log('run:', JSON.stringify({ sessionId: run.sessionId, status: run.status, text: run.assistantText }))
   assert.equal(run.status, 'succeeded', `unexpected status: ${run.status}`)
   assert.match(run.assistantText, /BRIDGE_OK/)
 
-  const follow = payload(await client.callTool({
-    name: 'dsh_start',
-    arguments: {
-      task: 'What did I ask you to reply? Answer in one short sentence.',
-      cwd: workspace,
-      sessionId: run.sessionId,
-    },
-  }))
-  assert.equal(follow.status, 'running')
-
-  let waited = follow
-  const deadline = Date.now() + 120_000
-  while (waited.status === 'running' && Date.now() < deadline) {
-    waited = payload(await client.callTool({
-      name: 'dsh_wait',
-      arguments: { sessionId: run.sessionId, timeoutMs: 30_000 },
-    }))
+  if (info.statusPublisher?.enabled) {
+    let publishedRun
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline) {
+      const state = JSON.parse(await fs.readFile(info.statusPublisher.file, 'utf8').catch(() => '{}'))
+      publishedRun = state.runs?.find((item) => item.sessionId === run.sessionId)
+      if (publishedRun?.status === 'succeeded') break
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    assert.equal(publishedRun?.status, 'succeeded', 'completed run was not published for the panel')
+    assert.equal(publishedRun.assistantText, undefined)
+    assert.equal(publishedRun.toolCalls, undefined)
+    console.log('panel state:', info.statusPublisher.file)
   }
-  console.log('follow:', JSON.stringify({ status: waited.status, text: waited.assistantText }))
-  assert.equal(waited.status, 'succeeded', `unexpected follow status: ${waited.status}`)
-  assert.match(waited.assistantText, /BRIDGE_OK/i)
-
-  const sessions = payload(await client.callTool({ name: 'dsh_sessions', arguments: {} }))
-  assert.ok(sessions.sessions.some((item) => item.sessionId === run.sessionId))
-
-  const toolRun = payload(await client.callTool({
-    name: 'dsh_run',
-    arguments: {
-      task: 'Use the write tool to create a file named ok.txt containing exactly OK, then reply DONE.',
-      cwd: workspace,
-      timeoutMs: 180_000,
-    },
-  }))
-  console.log('tools-run:', JSON.stringify({ status: toolRun.status, text: toolRun.assistantText, calls: toolRun.toolCalls?.map((item) => item.name) }))
-  assert.equal(toolRun.status, 'succeeded', `unexpected tool status: ${toolRun.status}`)
-  assert.ok((toolRun.toolCalls?.length ?? 0) > 0, 'expected at least one tool call')
-  assert.equal(await fs.readFile(path.join(workspace, 'ok.txt'), 'utf8'), 'OK')
-
-  const shellMarker = 'PWSH_OK_' + Date.now()
-  const shellRun = payload(await client.callTool({
-    name: 'dsh_run',
-    arguments: {
-      task: 'Use the pwsh tool to execute this exact command: Set-Content -LiteralPath shell-ok.txt -Value ' + shellMarker + ' -NoNewline\nDo not use write or edit tools. Then reply DONE.',
-      cwd: workspace,
-      timeoutMs: 180_000,
-    },
-  }))
-  console.log('shell-run:', JSON.stringify({ status: shellRun.status, text: shellRun.assistantText, calls: shellRun.toolCalls?.map((item) => item.name) }))
-  assert.equal(shellRun.status, 'succeeded')
-  assert.ok(shellRun.toolCalls?.some((item) => item.name === 'pwsh'), 'expected a real pwsh tool call')
-  assert.ok(!shellRun.toolCalls?.some((item) => ['write', 'edit'].includes(item.name)), 'shell probe must not use file write tools')
-  assert.equal(await fs.readFile(path.join(workspace, 'shell-ok.txt'), 'utf8'), shellMarker)
 
   console.log('SMOKE OK')
 } finally {

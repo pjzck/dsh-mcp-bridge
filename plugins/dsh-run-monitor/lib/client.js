@@ -13,6 +13,11 @@ window.__ModuleLoader__.load({
         };
         const API_PATH = "/api/dsh-run-monitor";
         const CSS = `
+.drm-view.drm-session-view{overflow:hidden;contain:size}
+.drm-session-content{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}
+.drm-session-top{flex:none}
+.drm-session-panel{flex:1;min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.drm-session-panel[hidden]{display:none}
 .drm-view{--drm-bg:var(--dsw-alias-bg-base,#fff);--drm-fg:var(--dsw-alias-label-primary,#20252f);--drm-muted:var(--dsw-alias-label-secondary,#7b808b);--drm-line:var(--dsw-alias-border-l3,rgba(128,128,128,.18));--drm-soft:rgba(128,128,128,.055);--drm-accent:#4d6bfe;display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;overflow-y:auto;padding:24px 28px 32px;box-sizing:border-box;color:var(--drm-fg);font-size:13px;line-height:1.5;container-type:inline-size}
 .drm-view *{box-sizing:border-box}.drm-view button,.drm-view input,.drm-view select{font:inherit;color:inherit}.drm-view button{cursor:pointer}.drm-view button:disabled{cursor:default;opacity:.55}.drm-view button:focus-visible,.drm-view input:focus-visible,.drm-view select:focus-visible,.drm-view summary:focus-visible{outline:2px solid var(--drm-accent);outline-offset:3px}.drm-view h2,.drm-view h3,.drm-view p{margin:0}.drm-muted{color:var(--drm-muted)}.drm-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums}.drm-truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .drm-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}.drm-heading{display:flex;align-items:center;gap:12px}.drm-logo{display:grid;place-items:center;width:38px;height:38px;border:1px solid rgba(77,107,254,.2);background:rgba(77,107,254,.07);border-radius:11px;color:var(--drm-accent)}.drm-view h2{font-size:20px;font-weight:650;letter-spacing:-.4px}.drm-subtitle{font-size:12px;color:var(--drm-muted);margin-top:2px!important}.drm-sync{display:flex;align-items:center;gap:10px;color:var(--drm-muted);font-size:11px}.drm-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}.drm-dot-live{color:#24946b;box-shadow:0 0 0 3px rgba(36,148,107,.09)}.drm-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--drm-line);border-radius:7px;background:transparent;padding:6px 10px;font-size:12px!important;white-space:nowrap}.drm-btn:hover:not(:disabled){background:var(--drm-soft)}.drm-btn-primary{color:var(--drm-accent)!important;background:rgba(77,107,254,.06)}.drm-spin svg{animation:drm-spin 1s linear infinite}@keyframes drm-spin{to{transform:rotate(360deg)}}
@@ -141,20 +146,24 @@ window.__ModuleLoader__.load({
                 infoGroup("Token 用量", [["累计已上报",tokens(usage?.totalTokens)],["未缓存输入",tokens(usage?.uncachedInputTokens)],["缓存读取",tokens(usage?.cacheReadTokens)],["缓存写入",tokens(usage?.cacheWriteTokens)],["输出",tokens(usage?.outputTokens)]],usageNote(usage)+"；仅统计当前 run，不包含续聊前历史与内部子代理。"),
                 infoGroup("上下文与时间", [["上下文窗口",tokens(run.contextWindow)],["当前占用","未上报"],["开始时间",clock(run.startedAt,true)],["结束时间",clock(run.finishedAt,true)],["工作目录",run.cwd||"—"],["会话 ID",run.sessionId||"—"],["桥实例",bridge.instanceId||"—"]],run.note)
             ];
-            return h("div", {className:"drm-view drm-session-view", key:"session", ref:actions.pageRef, onKeyDown:e=>{if(e.key==="Escape")actions.back();}, "aria-label":"任务会话详情"},
+            return h("div", {className:"drm-view drm-session-view", key:"session", onKeyDown:e=>{if(e.key==="Escape")actions.back();}, "aria-label":"任务会话详情"},
                 h("div", {className:"drm-session-content"},
+                    h("div", {className:"drm-session-top"},
                     h("div", {className:"drm-session-nav"}, h("button", {type:"button",className:"drm-btn",onClick:actions.back,"aria-label":"返回任务概览"}, "‹ 返回任务概览"), h("span", {className:"drm-readonly"}, "只读会话")),
                     h("header", {className:"drm-session-heading"}, h("div", null, h("h2", null, taskName(run)), h("p", {className:"drm-subtitle"}, workspace(run.cwd)+" · "+shortId(run.sessionId)+" · "+(run.provider||"?")+" / "+(run.model||"?"))), chip(entry.status)),
                     h("section", {className:"drm-session-metrics", "aria-label":"任务关键指标"}, metric("执行用时",duration(run.durationMs),entry.live?phase(entry):"本轮执行已结束"), metric("已完成步骤",tokens(run.progress?.completedSteps),entry.live?stepLabel(run):""), metric("累计 token",tokens(usage?.totalTokens,true),usageNote(usage)), metric("上下文窗口",tokens(run.contextWindow,true),"占用量未上报")),
                     h("div", {className:"drm-session-toolbar"}, h("div", {className:"drm-tabs",role:"group","aria-label":"详情视图"}, [["conversation","会话记录"],["info","运行信息"]].map(([id,label])=>h("button",{type:"button",className:"drm-tab",key:id,"aria-pressed":state.tab===id,onClick:()=>actions.setTab(id)},label))),
-                        state.tab==="conversation"?h("div",{className:"drm-sync"},h("span",null,state.loading?"读取中…":entry.live?"实时更新":"执行记录"),h("button",{type:"button",className:"drm-btn",onClick:actions.refresh,disabled:state.loading,"aria-label":"刷新会话记录"},icon("refresh",13),"刷新")):null),
-                    state.tab==="info"?h("div",{className:"drm-info-grid"},groups):h("section", {className:"drm-transcript", "aria-label":"只读会话记录"},
+                        state.tab==="conversation"?h("div",{className:"drm-sync"},h("span",null,state.loading?"读取中…":entry.live?"实时更新":"执行记录"),h("button",{type:"button",className:"drm-btn",onClick:actions.refresh,disabled:state.loading,"aria-label":"刷新会话记录"},icon("refresh",13),"刷新")):null)),
+                    h("div", {className:"drm-session-panel", hidden:state.tab!=="conversation", ref:actions.scrollRef, role:"region", "aria-label":"会话记录内容", tabIndex:0},
+                        h("section", {className:"drm-transcript", "aria-label":"只读会话记录"},
                         state.error?h("div",{className:"drm-banner",role:"alert"},state.error,h("button",{type:"button",className:"drm-btn",onClick:actions.refresh},"重试")):null,
                         state.timeline.hasOlder?h("button",{type:"button",className:"drm-btn drm-load-older",disabled:state.olderLoading,onClick:actions.older},state.olderLoading?"加载中…":"加载更早的记录"):null,
                         !state.timeline.loaded&&state.loading?empty("正在读取会话","加载任务指令、助手回复和工具执行记录…"):state.timeline.loaded&&!state.timeline.entries.length&&!state.error?empty("暂无会话记录",entry.live?"任务开始产生消息后会自动更新。":"当前会话没有可展示的记录。"):state.timeline.entries.map(transcriptItem),
-                        h("div",{ref:actions.endRef}),
-                        state.timeline.entries.length?h("button",{type:"button",className:"drm-btn drm-jump-latest",onClick:()=>actions.endRef.current?.scrollIntoView({block:"end",behavior:"smooth"})},"↓ 跳至最新记录"):null),
-                    h("p",{className:"drm-session-footnote"},"仅查看此 SDK 任务的执行过程，无法在此发送消息或运行工具。")));
+                        state.timeline.entries.length?h("button",{type:"button",className:"drm-btn drm-jump-latest",onClick:()=>{const node=actions.scrollRef.current;node?.scrollTo({top:node.scrollHeight,behavior:"smooth"});}},"↓ 跳至最新记录"):null),
+                        h("p",{className:"drm-session-footnote"},"仅查看此 SDK 任务的执行过程，无法在此发送消息或运行工具。")),
+                    h("div", {className:"drm-session-panel", hidden:state.tab!=="info", role:"region", "aria-label":"运行信息内容", tabIndex:0},
+                        h("div",{className:"drm-info-grid"},groups),
+                        h("p",{className:"drm-session-footnote"},"仅查看此 SDK 任务的执行过程，无法在此发送消息或运行工具。"))));
         }
         function mergeTranscript(previous, value, identity, older) {
             const same=previous.identity===identity&&previous.loaded;
@@ -224,7 +233,7 @@ window.__ModuleLoader__.load({
             const [olderLoading, setOlderLoading] = React.useState(false);
             const [transcriptError, setTranscriptError] = React.useState(null);
             const timelineRef=React.useRef(timeline), transcriptLoad=React.useRef(null), requestVersion=React.useRef(0);
-            const overviewRef=React.useRef(null), overviewScroll=React.useRef(0), sessionPageRef=React.useRef(null), transcriptEndRef=React.useRef(null), scrollAnchor=React.useRef(null), detailSnapshot=React.useRef(null);
+            const overviewRef=React.useRef(null), overviewScroll=React.useRef(0), transcriptScrollRef=React.useRef(null), scrollAnchor=React.useRef(null), detailSnapshot=React.useRef(null);
             timelineRef.current=timeline;
             const [limit, setLimit] = React.useState(30);
             const [showConnections, setShowConnections] = React.useState(false);
@@ -299,7 +308,7 @@ window.__ModuleLoader__.load({
                 if(!detailOpen && !showConnections && overviewRef.current) overviewRef.current.scrollTop=overviewScroll.current;
             },[detailOpen,showConnections]);
             (React.useLayoutEffect||React.useEffect)(()=>{
-                const anchor=scrollAnchor.current, node=sessionPageRef.current;
+                const anchor=scrollAnchor.current, node=transcriptScrollRef.current;
                 if(anchor&&node){node.scrollTop=anchor.top+Math.max(0,node.scrollHeight-anchor.height);scrollAnchor.current=null;}
             },[timeline.entries]);
             React.useEffect(()=>{
@@ -321,7 +330,7 @@ window.__ModuleLoader__.load({
                         const result=await callApi(controller.signal,body);
                         if(disposed||requestVersion.current!==version)return;
                         if(!result?.ok||!result.value)throw new Error(result?.error?.message||"会话记录读取失败");
-                        if(older&&sessionPageRef.current)scrollAnchor.current={top:sessionPageRef.current.scrollTop,height:sessionPageRef.current.scrollHeight};
+                        if(older&&transcriptScrollRef.current)scrollAnchor.current={top:transcriptScrollRef.current.scrollTop,height:transcriptScrollRef.current.scrollHeight};
                         setTimeline(previous=>{const next=mergeTranscript(previous,result.value,detailIdentity,older);timelineRef.current=next;return next;});
                         setTranscriptError(null);
                     }catch(error){
@@ -343,7 +352,7 @@ window.__ModuleLoader__.load({
             const reset = () => { setQuery(""); setModel(""); setSelected(null); setLimit(30); };
             const refresh = () => { clearTimeout(timer.current); load.current(); };
             const openTask=key=>{const entry=entries.find(e=>e.key===key);if(!entry)return;overviewScroll.current=overviewRef.current?.scrollTop||0;detailSnapshot.current=entry;setSelected(key);setDetailTarget({sessionId:entry.run.sessionId,bridgeInstanceId:entry.bridge.instanceId});setDetailTab("conversation");setDetailOpen(true);};
-            if(detailOpen && detailEntry) return detailPage(detailEntry,{tab:detailTab,timeline,loading:transcriptLoading,olderLoading,error:transcriptError},{back:()=>setDetailOpen(false),setTab:setDetailTab,refresh:()=>transcriptLoad.current?.(false),older:()=>transcriptLoad.current?.(true),pageRef:sessionPageRef,endRef:transcriptEndRef});
+            if(detailOpen && detailEntry) return detailPage(detailEntry,{tab:detailTab,timeline,loading:transcriptLoading,olderLoading,error:transcriptError},{back:()=>setDetailOpen(false),setTab:setDetailTab,refresh:()=>transcriptLoad.current?.(false),older:()=>transcriptLoad.current?.(true),scrollRef:transcriptScrollRef});
             if (showConnections) return h("div", { className: "drm-view", key: "connections" },
                 connections(files, data, error !== null, showIdleConnections, () => setShowIdleConnections(!showIdleConnections), () => { setShowConnections(false); setShowIdleConnections(false); }));
             return h("div", { className: "drm-view", key: "tasks", ref: overviewRef }, h("header", { className: "drm-header" }, h("div", { className: "drm-heading" }, h("span", { className: "drm-logo" }, icon("grid", 20)), h("div", null, h("h2", null, "Agent 概览"), h("p", { className: "drm-subtitle" }, "DSH 任务 · 关注正在发生的事"))), h("div", { className: "drm-sync" }, h("span", { className: "drm-dot " + (error ? "drm-amber" : lastOkAt ? "drm-dot-live" : "") }), h("span", { className: "drm-sync-label" }, error ? "连接不可用" : lastOkAt ? "自动更新 · " + clock(lastOkAt) : "正在连接"), h("button", { type: "button", className: "drm-btn", "aria-label": "打开连接管理", onClick: () => setShowConnections(true) }, icon("activity", 13), "连接管理"), h("button", { type: "button", className: "drm-btn " + (refreshing ? "drm-spin" : ""), onClick: refresh, disabled: refreshing, "aria-label": "刷新任务状态" }, icon("refresh", 13), "刷新"))), error ? h("div", { className: "drm-banner", role: "alert" }, "读取失败：" + error + "。当前为上次快照，不计入实时运行数量。") : null, errors.length ? h("div", { className: "drm-banner", role: "alert" }, errors.length + " 个桥状态文件读取失败，可到连接管理页查看。") : null, h("section", { className: "drm-stats", "aria-label": "任务统计" }, stat("运行中", loading && !data ? "—" : live.filter(e => e.status === "running").length, "当前追踪的 SDK agent", "drm-blue"), stat("排队中", loading && !data ? "—" : live.filter(e => e.status === "queued").length, "已提交，等待执行"), stat("异常任务", loading && !data ? "—" : attention.length, "失败、中断或连接过期", attention.length ? "drm-amber" : ""), stat("当前列表用量", totalKnown ? tokens(total, true) : "—", totalKnown ? totalPartial ? "已上报累计 · 数据不完整" : "当前 run 已上报累计" : "暂无已上报用量", "", totalKnown ? "tok" : "")), h("div", { className: "drm-toolbar" }, h("div", { className: "drm-tabs", role: "group", "aria-label": "任务视图" }, [["live", "进行中", live.length], ["attention", "异常任务", attention.length], ["history", "已结束", history.length]].map(([value, label, count]) => h("button", { type: "button", className: "drm-tab", "aria-pressed": scope === value, key: value, onClick: () => changeScope(value) }, label, h("span", { className: "drm-count" }, count)))), h("div", { className: "drm-filters" }, h("label", { className: "drm-search" }, icon("search", 14), h("input", { type: "search", value: query, onChange: e => { setQuery(e.target.value); setSelected(null); setLimit(30); }, placeholder: "搜索工作区、会话…", "aria-label": "搜索任务" })), h("select", { className: "drm-select", value: model, "aria-label": "筛选模型", onChange: e => { setModel(e.target.value); setSelected(null); setLimit(30); } }, h("option", { value: "" }, "全部模型"), models.map(m => h("option", { value: m, key: m }, m))))), h("div", { className: "drm-section-head" }, h("span", null, (scope === "live" ? "进行中" : scope === "attention" ? "异常任务" : "已结束的任务") + " / " + visible.length), h("span", null, "按最近执行时间排序 · 点击卡片查看详情")), h("div", { className: "drm-layout", "data-detail": false }, h("div", { className: "drm-grid", "aria-label": "任务卡片" }, loading && !data ? empty("正在读取任务", "连接 DSH bridge…") : visible.length ? visible.slice(0, limit).map(e => card(e, selected === e.key, openTask)) : normalized || model ? empty("没有匹配的任务", "试试其他关键词或模型。", h("button", { className: "drm-btn", type: "button", onClick: reset }, "清除筛选")) : empty(scope === "live" ? "当前没有进行中的任务" : scope === "attention" ? "暂无异常任务" : "暂无已结束的任务", scope === "live" ? "新的 SDK 任务开始后会自动出现在这里。" : "任务状态会自动更新。", scope === "live" && history.length ? h("button", { className: "drm-btn", type: "button", onClick: () => changeScope("history") }, "查看 " + history.length + " 个已结束任务") : null)), null), visible.length > limit ? h("button", { type: "button", className: "drm-btn", style: { alignSelf: "center", marginTop: 16 }, onClick: () => setLimit(limit + 30) }, "加载更多 · 还有 " + (visible.length - limit) + " 个任务") : null,

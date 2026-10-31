@@ -19,7 +19,7 @@ async function mount(files, props = {}, extra = {}, controls = {}) {
   }
   const document={hidden:false,querySelector:()=>({}),addEventListener(){},removeEventListener(){}}
   vm.runInNewContext(source,{
-    window:{__ModuleLoader__:{load({factory}){plugin=factory(()=>React)}}},document,
+    window:{__ModuleLoader__:{load({factory}){plugin=factory(name=>name==='@deepseek-ai/dsh-client-ui-primitives'?(controls.primitives||{}):React)}}},document,
     fetch:async(_,init)=>{const body=JSON.parse(init.body);requests.push(body);if(controls.fetch)return controls.fetch(body,init);return{ok:!fail,status:fail?503:200,json:async()=>body.method==='transcript'?{ok:true,value:{entries:[],hasOlder:false,beforeSeq:null,lastSeq:null,...controls.transcript}}:{ok:true,value:{files,...extra}}}},
     AbortController,setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,ms});return id},clearTimeout:id=>timers.delete(id),
   })
@@ -217,6 +217,25 @@ test('a late transcript response cannot replace the newly opened session', async
   finishFirst();await app.flush()
   assert.match(text(app.render()),/NEW_SESSION/)
   assert.doesNotMatch(text(app.render()),/OLD_SESSION/)
+  app.cleanup()
+})
+
+test('native Markdown receives the labels required by Desktop 0.2 for code fences and footnotes', async () => {
+  const MarkdownText=()=>null
+  const message='```js\nconsole.log(1)\n```\n\n说明[^1]\n\n[^1]: 参考'
+  const app=await mount([file('a',[run('session-history',{status:'succeeded',isRunning:false})])],{}, {},{
+    primitives:{MarkdownText}, transcript:{entries:[{id:'answer',seq:1,kind:'assistant',text:message}]}
+  })
+  clickText(app.render(),'已结束')
+  cards(app.render())[0].props.onClick();app.render();await app.flush()
+  const native=find(app.render(),node=>node.type===MarkdownText)
+  assert.equal(native.props.text,message)
+  const labels=native.props.labels
+  assert.equal(typeof labels.code.copyLabel,'string')
+  assert.equal(typeof labels.code.copiedLabel,'string')
+  for(const key of ['codeLabel','wrapLabel','unwrapLabel'])assert.equal(typeof labels.code.toolbarLabels[key],'string')
+  assert.equal(typeof labels.footnotes,'string')
+  assert.equal(native.props.codeLabels,labels.code)
   app.cleanup()
 })
 

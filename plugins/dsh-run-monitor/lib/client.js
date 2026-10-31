@@ -4,6 +4,13 @@ window.__ModuleLoader__.load({
         const React = require("react");
         const h = React.createElement;
         let MarkdownText; try { MarkdownText=require("@deepseek-ai/dsh-client-ui-primitives").MarkdownText; } catch {}
+        const markdownLabels = {
+            code: {
+                copyLabel: "复制", copiedLabel: "已复制",
+                toolbarLabels: { codeLabel: "代码", wrapLabel: "自动换行", unwrapLabel: "取消换行" }
+            },
+            footnotes: "脚注"
+        };
         const API_PATH = "/api/dsh-run-monitor";
         const CSS = `
 .drm-view{--drm-bg:var(--dsw-alias-bg-base,#fff);--drm-fg:var(--dsw-alias-label-primary,#20252f);--drm-muted:var(--dsw-alias-label-secondary,#7b808b);--drm-line:var(--dsw-alias-border-l3,rgba(128,128,128,.18));--drm-soft:rgba(128,128,128,.055);--drm-accent:#4d6bfe;display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;overflow-y:auto;padding:24px 28px 32px;box-sizing:border-box;color:var(--drm-fg);font-size:13px;line-height:1.5;container-type:inline-size}
@@ -97,7 +104,7 @@ window.__ModuleLoader__.load({
                 part.startsWith("`") && part.endsWith("`") ? h("code", {key:i}, part.slice(1,-1)) : part);
         }
         function markdown(text) {
-            if (MarkdownText) return h(MarkdownText, {text:String(text)});
+            if (MarkdownText) return h(MarkdownText, {text:String(text), labels:markdownLabels, codeLabels:markdownLabels.code});
             return String(text).split(/```([^\n`]*)\n([\s\S]*?)```/g).map((part, index, all) => {
                 if (index % 3 === 1) return null;
                 if (index % 3 === 2) return h("pre", {key:index}, h("code", {"data-language":all[index-1]}, part));
